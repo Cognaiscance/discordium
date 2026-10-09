@@ -18,6 +18,8 @@ pub const DEFAULT_PNET_ADDR: &str = "127.0.0.1:7777";
 
 const OP_REGISTER: u8 = 0x00;
 const OP_GET_DATA: u8 = 0x02;
+const OP_SEND: u8 = 0x03;
+const OP_PUSH: u8 = 0x04;
 const STATUS_OK: u8 = 0x00;
 const STATUS_ERR: u8 = 0x01;
 
@@ -121,6 +123,32 @@ pub fn get_data_packet(token: &[u8; 16]) -> Vec<u8> {
     buf
 }
 
+/// Op 0x03. Success from the node is silent, so this is only the request.
+pub fn send_packet(
+    token: &[u8; 16],
+    dest_device: &[u8; 16],
+    dest_app: &[u8; 16],
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(1 + 48 + payload.len());
+    buf.push(OP_SEND);
+    buf.extend_from_slice(token);
+    buf.extend_from_slice(dest_device);
+    buf.extend_from_slice(dest_app);
+    buf.extend_from_slice(payload);
+    buf
+}
+
+/// Op 0x04 push: sender app id, then the opaque payload.
+pub fn decode_push(datagram: &[u8]) -> Option<([u8; 16], &[u8])> {
+    if datagram.first() != Some(&OP_PUSH) || datagram.len() < 17 {
+        return None;
+    }
+    let mut sender = [0u8; 16];
+    sender.copy_from_slice(&datagram[1..17]);
+    Some((sender, &datagram[17..]))
+}
+
 fn push_str(buf: &mut Vec<u8>, text: &str) {
     buf.push(text.len() as u8);
     buf.extend_from_slice(text.as_bytes());
@@ -150,6 +178,28 @@ impl NodeClient {
 
     pub fn get_data(&self, token: &[u8; 16]) -> Result<Vec<u8>, NodeError> {
         self.round_trip(&get_data_packet(token), 3)
+    }
+
+    /// Send an app payload. A timeout means the node accepted it, because
+    /// success has no reply. An error reply is returned.
+    pub fn send(
+        &self,
+        token: &[u8; 16],
+        dest_device: &[u8; 16],
+        dest_app: &[u8; 16],
+        payload: &[u8],
+    ) -> Result<(), NodeError> {
+        self.socket
+            .send(&send_packet(token, dest_device, dest_app, payload))
+            .map_err(NodeError::Io)?;
+        self.socket
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .map_err(NodeError::Io)?;
+        let result = read_send_result(&self.socket);
+        self.socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .map_err(NodeError::Io)?;
+        result
     }
 
     fn round_trip(&self, packet: &[u8], attempts: u32) -> Result<Vec<u8>, NodeError> {
@@ -185,6 +235,23 @@ impl NodeClient {
     }
 }
 
+fn read_send_result(socket: &UdpSocket) -> Result<(), NodeError> {
+    let mut buf = [0u8; 64];
+    match socket.recv(&mut buf) {
+        Ok(0) => Err(NodeError::Unexpected),
+        Ok(n) => {
+            if n >= 1 && buf[0] == STATUS_ERR {
+                let code = if n >= 2 { Some(buf[1]) } else { None };
+                Err(NodeError::Rejected { code })
+            } else {
+                Err(NodeError::Unexpected)
+            }
+        }
+        Err(err) if is_timeout(&err) => Ok(()),
+        Err(err) => Err(NodeError::Io(err)),
+    }
+}
+
 fn is_timeout(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut
 }
@@ -202,6 +269,31 @@ mod tests {
         expected.push(22);
         expected.extend_from_slice(b"application/discordium");
         assert_eq!(packet, expected);
+    }
+
+    #[test]
+    fn send_packet_names_the_destination() {
+        let token = [0x11; 16];
+        let device = [0x22; 16];
+        let app = [0x33; 16];
+        let packet = send_packet(&token, &device, &app, &[1, 1]);
+        assert_eq!(packet[0], 0x03);
+        assert_eq!(&packet[1..17], &token);
+        assert_eq!(&packet[17..33], &device);
+        assert_eq!(&packet[33..49], &app);
+        assert_eq!(&packet[49..], &[1, 1]);
+    }
+
+    #[test]
+    fn decode_push_returns_the_sender_and_payload() {
+        let mut datagram = vec![0x04];
+        datagram.extend_from_slice(&[0xAB; 16]);
+        datagram.extend_from_slice(&[9, 8, 7]);
+        let (sender, payload) = decode_push(&datagram).unwrap();
+        assert_eq!(sender, [0xAB; 16]);
+        assert_eq!(payload, &[9, 8, 7]);
+        assert!(decode_push(&[0x04; 16]).is_none());
+        assert!(decode_push(&[0x02, 0, 0]).is_none());
     }
 
     #[test]

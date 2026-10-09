@@ -24,5 +24,10 @@ record.
 
 The record role creates or reopens `~/.pnet/discordium/` and keeps every
 conversation in the `record` file there. `DISCORDIUM_DIR` overrides that
-directory. A device or a standby does not open it. The pages are a later
-step. This process stays running so the registration stays bound.
+directory. A device or a standby does not open it.
+
+A device sends `HELLO` to that server until `HELLO_ACK`. The record server
+acks an approved `discordium` on one of this user's own devices. A retry
+does not attach the device twice. Any other sender is ignored. An app that
+is not in get-data yet is not refused; a later hello can still attach. A
+standby does not answer. The pages are a later step.

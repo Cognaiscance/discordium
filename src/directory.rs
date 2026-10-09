@@ -282,6 +282,49 @@ fn rank_key(device: &DeviceRecord) -> (bool, u8, [u8; 16]) {
     (device.sg_rank == 0, device.sg_rank, device.id)
 }
 
+/// An app on one device, addressed the way a send names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Peer {
+    pub device: [u8; 16],
+    pub app: [u8; 16],
+}
+
+/// Approved `discordium` on the record-holding server.
+///
+/// The first approved app of that alias on the record holder is the one a
+/// device hellos. Contact devices are not candidates.
+pub fn record_discordium(dir: &Directory) -> Option<Peer> {
+    let holder = record_holder(dir)?;
+    let app = holder
+        .apps
+        .iter()
+        .find(|app| app.alias == APP_ALIAS && app.approved)?;
+    Some(Peer {
+        device: holder.id,
+        app: app.id,
+    })
+}
+
+/// True when `app` is an approved `discordium` on one of this user's devices.
+///
+/// A contact app does not count. An app that is not in the tree yet is false,
+/// which is not a refusal: a later directory can make the same id true.
+pub fn approved_own_discordium(dir: &Directory, app: &[u8; 16]) -> bool {
+    dir.own_devices.iter().any(|device| {
+        device.apps.iter().any(|candidate| {
+            candidate.id == *app && candidate.approved && candidate.alias == APP_ALIAS
+        })
+    })
+}
+
+/// Own device that lists `app`. The server uses this to address a reply.
+pub fn device_of_app(dir: &Directory, app: &[u8; 16]) -> Option<[u8; 16]> {
+    dir.own_devices
+        .iter()
+        .find(|device| device.apps.iter().any(|candidate| candidate.id == *app))
+        .map(|device| device.id)
+}
+
 pub fn choose_role(dir: &Directory) -> Result<Role, RoleError> {
     let local = dir
         .own_devices
