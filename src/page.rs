@@ -565,7 +565,7 @@ fn idle(err: &std::io::Error) -> bool {
 mod tests {
     use super::*;
     use crate::create_list::{on_create, on_list, CREATE_REQ, LIST_REQ};
-    use crate::directory::{AppRecord, DeviceRecord, Directory, Grade};
+    use crate::directory::{AppRecord, DeviceRecord, Directory, Grade, CLIENT_ALIAS, SERVER_ALIAS};
     use crate::hello::{ServerHello, HELLO_BYTES};
     use crate::link::FakeSocket;
     use crate::notice::accept_post;
@@ -589,7 +589,7 @@ mod tests {
         let home_app = ident(0x21);
         let dir = Directory {
             local_app_id: ident(1),
-            local_app_alias: "discordium".into(),
+            local_app_alias: CLIENT_ALIAS.into(),
             local_app_approved: true,
             token: ident(2),
             local_device: ident(0x10),
@@ -603,7 +603,7 @@ mod tests {
                     sg_rank: 0,
                     apps: vec![AppRecord {
                         id: laptop_app,
-                        alias: "discordium".into(),
+                        alias: CLIENT_ALIAS.into(),
                         approved: true,
                     }],
                 },
@@ -614,7 +614,7 @@ mod tests {
                     sg_rank: 1,
                     apps: vec![AppRecord {
                         id: home_app,
-                        alias: "discordium".into(),
+                        alias: SERVER_ALIAS.into(),
                         approved: true,
                     }],
                 },
@@ -855,7 +855,7 @@ mod tests {
             sg_rank: 0,
             apps: vec![AppRecord {
                 id: phone_app,
-                alias: "discordium".into(),
+                alias: CLIENT_ALIAS.into(),
                 approved: true,
             }],
         });

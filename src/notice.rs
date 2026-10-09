@@ -201,7 +201,9 @@ impl DeviceHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::directory::{AppRecord, ContactRecord, DeviceRecord, Directory, Grade};
+    use crate::directory::{
+        AppRecord, ContactRecord, DeviceRecord, Directory, Grade, CLIENT_ALIAS, SERVER_ALIAS,
+    };
     use crate::hello::{ServerHello, HELLO_ACK_BYTES, HELLO_BYTES};
     use crate::link::FakeSocket;
     use crate::post_history::{
@@ -242,7 +244,7 @@ mod tests {
     fn directory(own: Vec<DeviceRecord>) -> Directory {
         Directory {
             local_app_id: ident(1),
-            local_app_alias: "discordium".into(),
+            local_app_alias: SERVER_ALIAS.into(),
             local_app_approved: true,
             token: ident(2),
             local_device: ident(0x20),
@@ -257,7 +259,7 @@ mod tests {
                     "other-sg",
                     Grade::Server,
                     1,
-                    vec![app(ident(0x31), "discordium", true)],
+                    vec![app(ident(0x31), SERVER_ALIAS, true)],
                 )],
             }],
         }
@@ -274,28 +276,28 @@ mod tests {
                 "laptop",
                 Grade::Device,
                 0,
-                vec![app(laptop_app, "discordium", true)],
+                vec![app(laptop_app, CLIENT_ALIAS, true)],
             ),
             dev(
                 ident(0x40),
                 "phone",
                 Grade::Device,
                 0,
-                vec![app(phone_app, "discordium", true)],
+                vec![app(phone_app, CLIENT_ALIAS, true)],
             ),
             dev(
                 ident(0x50),
                 "tablet",
                 Grade::Device,
                 0,
-                vec![app(ident(0x52), "discordium", true)],
+                vec![app(ident(0x52), CLIENT_ALIAS, true)],
             ),
             dev(
                 ident(0x20),
                 "home",
                 Grade::Server,
                 1,
-                vec![app(home_app, "discordium", true)],
+                vec![app(home_app, SERVER_ALIAS, true)],
             ),
         ]);
         (dir, laptop_app, phone_app, home_app)

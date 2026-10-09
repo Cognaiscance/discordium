@@ -2,7 +2,7 @@
 //!
 //! The payload is a version byte and a type byte. The sender is the push's
 //! app id, not anything inside the payload. The server acks an approved
-//! `discordium` on one of this user's own devices. A repeat ack does not
+//! `discordium-client` on one of this user's own devices. A repeat ack does not
 //! attach that device again. Any other sender is ignored, and an app that is
 //! missing from the directory is not remembered as a refusal.
 
@@ -97,7 +97,9 @@ impl ServerHello {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::directory::{AppRecord, ContactRecord, DeviceRecord, Directory, Grade};
+    use crate::directory::{
+        AppRecord, ContactRecord, DeviceRecord, Directory, Grade, CLIENT_ALIAS, SERVER_ALIAS,
+    };
     use crate::link::FakeSocket;
 
     fn ident(byte: u8) -> [u8; 16] {
@@ -135,7 +137,7 @@ mod tests {
     ) -> Directory {
         Directory {
             local_app_id: ident(1),
-            local_app_alias: "discordium".into(),
+            local_app_alias: CLIENT_ALIAS.into(),
             local_app_approved: true,
             token: ident(2),
             local_device: local,
@@ -161,14 +163,14 @@ mod tests {
                     "laptop",
                     Grade::Device,
                     0,
-                    vec![app(laptop_app, "discordium", true)],
+                    vec![app(laptop_app, CLIENT_ALIAS, true)],
                 ),
                 dev(
                     home,
                     "home",
                     Grade::Server,
                     1,
-                    vec![app(home_app, "discordium", true)],
+                    vec![app(home_app, SERVER_ALIAS, true)],
                 ),
             ],
             vec![ContactRecord {
@@ -179,7 +181,7 @@ mod tests {
                     "other-sg",
                     Grade::Server,
                     1,
-                    vec![app(ident(0x31), "discordium", true)],
+                    vec![app(ident(0x31), SERVER_ALIAS, true)],
                 )],
             }],
         );
@@ -242,7 +244,7 @@ mod tests {
         let (mut dir, laptop_app, _home, home_app) = two_nodes();
         dir.own_devices[0]
             .apps
-            .push(app(ident(0x12), "discordium", false));
+            .push(app(ident(0x12), CLIENT_ALIAS, false));
         dir.own_devices[0]
             .apps
             .push(app(ident(0x13), "notes", true));
@@ -275,7 +277,7 @@ mod tests {
             "phone",
             Grade::Device,
             0,
-            vec![app(ident(0x99), "discordium", true)],
+            vec![app(ident(0x99), CLIENT_ALIAS, true)],
         ));
         link.deliver(ident(0x99), home_app, &HELLO_BYTES);
         let (from, payload) = link.take(home_app).unwrap();
@@ -302,7 +304,7 @@ mod tests {
                     "laptop",
                     Grade::Device,
                     0,
-                    vec![app(ident(0x11), "discordium", true)],
+                    vec![app(ident(0x11), CLIENT_ALIAS, true)],
                 ),
                 dev(home, "home", Grade::Server, 1, vec![]),
             ],
@@ -314,7 +316,7 @@ mod tests {
 
         dir.own_devices[1]
             .apps
-            .push(app(ident(0x21), "discordium", false));
+            .push(app(ident(0x21), SERVER_ALIAS, false));
         device.note_directory(&dir);
         assert!(device.hello_to_send().is_none());
 

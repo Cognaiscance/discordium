@@ -1,10 +1,11 @@
-//! Live loops for a device and for the record server.
+//! Live loops for a client and for the record server.
 //!
-//! The device retries HELLO until the record server acks it. The record server
+//! The client retries HELLO until the record server acks it. The record server
 //! also opens and lists conversations, and saves messages, for an approved
-//! device. A new message is announced to each other attached device, which
-//! then asks for history. A device also serves the conversation list and one
-//! thread. Tests drive those same types on the fake socket.
+//! client. A new message is announced to each other attached client, which
+//! then asks for history. A client also serves the conversation list and one
+//! thread. The server process does not. Tests drive those same types on the
+//! fake socket.
 
 use std::net::{TcpListener, UdpSocket};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -35,6 +36,7 @@ pub fn run_device(
         .set_nonblocking(true)
         .map_err(|err| format!("page socket: {err}"))?;
     println!("Page at http://127.0.0.1:{http_port}/");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     let mut hello = DeviceHello::new();
     let mut history = DeviceHistory::new();
     let mut conversations = ConversationList::new();

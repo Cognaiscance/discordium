@@ -1,7 +1,7 @@
 //! Conversation record for the server that holds it.
 //!
-//! The directory is `~/.pnet/discordium/`. This file is `record`, beside the
-//! token file from registration. One process writes it. Order is the order
+//! The directory is `~/.pnet/discordium/`. This file is `record`. The server
+//! process writes it. Order is the order
 //! the server accepted each row, not the order of the timestamps.
 //!
 //! A message id is chosen by the sending device and is unique inside its
