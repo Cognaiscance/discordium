@@ -40,4 +40,9 @@ remain and the next ask continues after the last id.
 An approved device saves a message with `POST` and retries until `POST_ACK`.
 The same device message id returns the copy already saved. `HISTORY_RESP`
 returns messages after a cursor. When they do not fit in one datagram, the
-reply says more remain. The pages are a later step.
+reply says more remain.
+
+When that save is a new message, the record server sends `NOTICE` to each
+other attached device. That device sends `HISTORY_REQ` and reads the new
+message. A repeated post does not send another notice. The pages are a
+later step.

@@ -2,7 +2,8 @@
 //!
 //! The device retries HELLO until the record server acks it. The record server
 //! also opens and lists conversations, and saves messages, for an approved
-//! device. Tests drive those same types on the fake socket.
+//! device. A new message is announced to each other attached device, which
+//! then asks for history. Tests drive those same types on the fake socket.
 
 use std::net::UdpSocket;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -11,7 +12,8 @@ use crate::create_list::{is_create_req, is_list_req, on_create, on_list};
 use crate::directory::{approved_own_discordium, device_of_app, parse_get_data, Directory};
 use crate::hello::{is_hello, DeviceHello, ServerHello, HELLO_BYTES};
 use crate::node_api::{decode_push, NodeClient};
-use crate::post_history::{is_history_req, is_post, on_history, on_post};
+use crate::notice::{accept_post, DeviceHistory};
+use crate::post_history::{is_history_req, is_post, on_history};
 use crate::store::Store;
 
 pub fn run_device(
@@ -23,13 +25,16 @@ pub fn run_device(
     push.set_read_timeout(Some(Duration::from_secs(1)))
         .map_err(|err| format!("push socket: {err}"))?;
     let mut hello = DeviceHello::new();
+    let mut history = DeviceHistory::new();
     hello.note_directory(&directory);
+    history.note_directory(&directory);
     let mut announced = false;
     loop {
         if !hello.is_acked() {
             if hello.hello_to_send().is_none() {
                 refresh(client, &token, &mut directory);
                 hello.note_directory(&directory);
+                history.note_directory(&directory);
             }
             if let Some(server) = hello.hello_to_send() {
                 match client.send(&token, &server.device, &server.app, &HELLO_BYTES) {
@@ -51,6 +56,16 @@ pub fn run_device(
             hello.on_push(sender, &payload);
             if hello.is_acked() && !was_acked {
                 println!("Hello acked.");
+            }
+            if let Some((peer, request)) = history.on_notice(sender, &payload) {
+                if let Err(err) = client.send(&token, &peer.device, &peer.app, &request) {
+                    eprintln!("discordium: history: {err}");
+                }
+            }
+            if let Some((peer, request)) = history.on_history(sender, &payload) {
+                if let Err(err) = client.send(&token, &peer.device, &peer.app, &request) {
+                    eprintln!("discordium: history: {err}");
+                }
             }
         }
     }
@@ -81,12 +96,33 @@ pub fn run_record(
             send_to_sender(client, &token, &directory, &sender, &ack, "hello ack");
             continue;
         }
+        if is_post(&payload) {
+            if let Some(accepted) = accept_post(
+                &directory,
+                &mut store,
+                server.attached(),
+                sender,
+                &payload,
+                now_ms(),
+            ) {
+                send_to_sender(
+                    client,
+                    &token,
+                    &directory,
+                    &sender,
+                    &accepted.ack,
+                    "post ack",
+                );
+                for (app, notice) in accepted.notices {
+                    send_to_sender(client, &token, &directory, &app, &notice, "notice");
+                }
+            }
+            continue;
+        }
         let reply = if is_create_req(&payload) {
             on_create(&directory, &mut store, sender, &payload, now_ms())
         } else if is_list_req(&payload) {
             on_list(&directory, &store, sender, &payload)
-        } else if is_post(&payload) {
-            on_post(&directory, &mut store, sender, &payload, now_ms())
         } else if is_history_req(&payload) {
             on_history(&directory, &store, sender, &payload)
         } else {
