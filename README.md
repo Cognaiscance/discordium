@@ -35,5 +35,9 @@ standby does not answer.
 An approved device opens a conversation with `CREATE_REQ`. The same client
 id returns the conversation already saved. `LIST_RESP` returns those
 conversations. When they do not fit in one datagram, the reply says more
-remain and the next ask continues after the last id. The pages are a later
-step.
+remain and the next ask continues after the last id.
+
+An approved device saves a message with `POST` and retries until `POST_ACK`.
+The same device message id returns the copy already saved. `HISTORY_RESP`
+returns messages after a cursor. When they do not fit in one datagram, the
+reply says more remain. The pages are a later step.

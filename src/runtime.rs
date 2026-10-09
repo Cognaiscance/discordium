@@ -1,8 +1,8 @@
 //! Live loops for a device and for the record server.
 //!
 //! The device retries HELLO until the record server acks it. The record server
-//! also opens and lists conversations for an approved device. Tests drive those
-//! same types on the fake socket.
+//! also opens and lists conversations, and saves messages, for an approved
+//! device. Tests drive those same types on the fake socket.
 
 use std::net::UdpSocket;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -11,6 +11,7 @@ use crate::create_list::{is_create_req, is_list_req, on_create, on_list};
 use crate::directory::{approved_own_discordium, device_of_app, parse_get_data, Directory};
 use crate::hello::{is_hello, DeviceHello, ServerHello, HELLO_BYTES};
 use crate::node_api::{decode_push, NodeClient};
+use crate::post_history::{is_history_req, is_post, on_history, on_post};
 use crate::store::Store;
 
 pub fn run_device(
@@ -84,6 +85,10 @@ pub fn run_record(
             on_create(&directory, &mut store, sender, &payload, now_ms())
         } else if is_list_req(&payload) {
             on_list(&directory, &store, sender, &payload)
+        } else if is_post(&payload) {
+            on_post(&directory, &mut store, sender, &payload, now_ms())
+        } else if is_history_req(&payload) {
+            on_history(&directory, &store, sender, &payload)
         } else {
             None
         };
@@ -94,7 +99,11 @@ pub fn run_record(
 }
 
 fn known_request(payload: &[u8]) -> bool {
-    is_hello(payload) || is_create_req(payload) || is_list_req(payload)
+    is_hello(payload)
+        || is_create_req(payload)
+        || is_list_req(payload)
+        || is_post(payload)
+        || is_history_req(payload)
 }
 
 fn now_ms() -> u64 {
