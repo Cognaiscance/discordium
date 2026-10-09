@@ -2,10 +2,14 @@
 //!
 //! The process registers with the local node, remembers the token, and chooses
 //! device, record, or standby from get-data. The record role keeps conversations
-//! in its directory. A device or a standby does not open that store.
+//! and acks HELLO from an approved device. A device retries HELLO until that
+//! ack. A standby does not open the store and does not answer.
 
 mod directory;
+mod hello;
+mod link;
 mod node_api;
+mod runtime;
 mod store;
 
 use std::net::SocketAddr;
@@ -33,7 +37,7 @@ fn run() -> Result<(), String> {
     let push_port = push_port()?;
     let token_path = token_path();
 
-    let _push = std::net::UdpSocket::bind(("127.0.0.1", push_port))
+    let push = std::net::UdpSocket::bind(("127.0.0.1", push_port))
         .map_err(|err| format!("bind 127.0.0.1:{push_port}: {err}"))?;
     let client =
         NodeClient::connect(pnet_addr).map_err(|err| format!("connect to {pnet_addr}: {err}"))?;
@@ -79,20 +83,23 @@ fn run() -> Result<(), String> {
         token_path.display()
     );
     println!("Push port {push_port}. Stop with Ctrl-C.");
-    let _record = if role == Role::Record {
-        let path = record_dir();
-        let store = Store::open(&path).map_err(|err| format!("open record: {err}"))?;
-        println!(
-            "Record directory {} ({} conversations).",
-            path.display(),
-            store.list_conversations().len()
-        );
-        Some(store)
-    } else {
-        None
-    };
-    std::thread::park();
-    Ok(())
+    match role {
+        Role::Record => {
+            let path = record_dir();
+            let store = Store::open(&path).map_err(|err| format!("open record: {err}"))?;
+            println!(
+                "Record directory {} ({} conversations).",
+                path.display(),
+                store.list_conversations().len()
+            );
+            runtime::run_record(&client, &push, token, dir, store)
+        }
+        Role::Device => runtime::run_device(&client, &push, token, dir),
+        Role::Standby => {
+            std::thread::park();
+            Ok(())
+        }
+    }
 }
 
 fn pnet_addr() -> Result<SocketAddr, String> {
