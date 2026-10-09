@@ -1,6 +1,6 @@
 //! Register and get-data against the local pNet node, and the saved token.
 //!
-//! The token file is the only thing this step writes. It does not open the
+//! Each process writes only its own token file. This module does not open the
 //! conversation store.
 
 use std::fs::{self, OpenOptions};
@@ -10,11 +10,17 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::directory::APP_ALIAS;
+use crate::directory::ProcessKind;
 
 pub const APP_PROTOCOL: &str = "application/discordium";
-pub const DEFAULT_PUSH_PORT: u16 = 8790;
 pub const DEFAULT_PNET_ADDR: &str = "127.0.0.1:7777";
+
+pub fn default_push_port(kind: ProcessKind) -> u16 {
+    match kind {
+        ProcessKind::Client => 8790,
+        ProcessKind::Server => 8791,
+    }
+}
 
 const OP_REGISTER: u8 = 0x00;
 const OP_GET_DATA: u8 = 0x02;
@@ -45,22 +51,31 @@ impl std::fmt::Display for NodeError {
     }
 }
 
-pub fn token_path() -> PathBuf {
+pub fn token_path(kind: ProcessKind) -> PathBuf {
     if let Ok(path) = std::env::var("DISCORDIUM_TOKEN_FILE") {
         if !path.is_empty() {
             return PathBuf::from(path);
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home).join(".pnet/discordium/token");
-        }
-    }
-    PathBuf::from("discordium-token")
+    let home = std::env::var("HOME").ok();
+    default_token_path(kind, home.as_deref())
 }
 
-/// Directory the record-holding server owns. The token file lives here too.
-/// `DISCORDIUM_DIR` overrides it. A device or a standby does not open this.
+pub fn default_token_path(kind: ProcessKind, home: Option<&str>) -> PathBuf {
+    let dir = match kind {
+        ProcessKind::Client => "discordium-client",
+        ProcessKind::Server => "discordium-server",
+    };
+    if let Some(home) = home {
+        if !home.is_empty() {
+            return PathBuf::from(home).join(".pnet").join(dir).join("token");
+        }
+    }
+    PathBuf::from(format!("{dir}-token"))
+}
+
+/// Directory the record-holding server owns. `DISCORDIUM_DIR` overrides it.
+/// The client and a standby do not open this. Token files live elsewhere.
 pub fn record_dir() -> PathBuf {
     if let Ok(path) = std::env::var("DISCORDIUM_DIR") {
         if !path.is_empty() {
@@ -109,9 +124,9 @@ pub fn load_token(path: &Path) -> io::Result<Option<[u8; 16]>> {
     }
 }
 
-pub fn register_packet(push_port: u16) -> Vec<u8> {
+pub fn register_packet(alias: &str, push_port: u16) -> Vec<u8> {
     let mut buf = vec![OP_REGISTER];
-    push_str(&mut buf, APP_ALIAS);
+    push_str(&mut buf, alias);
     buf.extend_from_slice(&push_port.to_be_bytes());
     push_str(&mut buf, APP_PROTOCOL);
     buf
@@ -166,8 +181,8 @@ impl NodeClient {
         Ok(Self { socket })
     }
 
-    pub fn register(&self, push_port: u16) -> Result<[u8; 16], NodeError> {
-        let reply = self.round_trip(&register_packet(push_port), 5)?;
+    pub fn register(&self, alias: &str, push_port: u16) -> Result<[u8; 16], NodeError> {
+        let reply = self.round_trip(&register_packet(alias, push_port), 5)?;
         if reply.len() != 17 || reply[0] != STATUS_OK {
             return Err(NodeError::Unexpected);
         }
@@ -259,16 +274,53 @@ fn is_timeout(err: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::directory::{ProcessKind, CLIENT_ALIAS, SERVER_ALIAS};
 
     #[test]
-    fn register_packet_names_discordium() {
-        let packet = register_packet(8790);
-        let mut expected = vec![0x00, 10];
-        expected.extend_from_slice(b"discordium");
-        expected.extend_from_slice(&8790u16.to_be_bytes());
+    fn register_packets_use_different_names_and_ports() {
+        assert_eq!(
+            register_packet(CLIENT_ALIAS, 8790),
+            named_register(CLIENT_ALIAS, 8790)
+        );
+        assert_eq!(
+            register_packet(SERVER_ALIAS, 8791),
+            named_register(SERVER_ALIAS, 8791)
+        );
+        assert_ne!(
+            register_packet(CLIENT_ALIAS, 8790),
+            register_packet(SERVER_ALIAS, 8791)
+        );
+    }
+
+    fn named_register(alias: &str, port: u16) -> Vec<u8> {
+        let mut expected = vec![0x00, alias.len() as u8];
+        expected.extend_from_slice(alias.as_bytes());
+        expected.extend_from_slice(&port.to_be_bytes());
         expected.push(22);
         expected.extend_from_slice(b"application/discordium");
-        assert_eq!(packet, expected);
+        expected
+    }
+
+    #[test]
+    fn token_paths_and_push_ports_differ() {
+        assert_eq!(
+            default_token_path(ProcessKind::Client, Some("/home/person")),
+            PathBuf::from("/home/person/.pnet/discordium-client/token")
+        );
+        assert_eq!(
+            default_token_path(ProcessKind::Server, Some("/home/person")),
+            PathBuf::from("/home/person/.pnet/discordium-server/token")
+        );
+        assert_eq!(
+            default_token_path(ProcessKind::Client, None),
+            PathBuf::from("discordium-client-token")
+        );
+        assert_eq!(
+            default_token_path(ProcessKind::Server, Some("")),
+            PathBuf::from("discordium-server-token")
+        );
+        assert_eq!(default_push_port(ProcessKind::Client), 8790);
+        assert_eq!(default_push_port(ProcessKind::Server), 8791);
     }
 
     #[test]

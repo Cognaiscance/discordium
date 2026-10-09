@@ -1,64 +1,51 @@
-//! Discordium. One binary, started on each machine that takes part.
+//! Start one Discordium process against the local node.
 //!
-//! The process registers with the local node, remembers the token, and chooses
-//! device, record, or standby from get-data. The record role keeps conversations,
-//! acks HELLO from an approved device, and opens, lists, or extends a conversation
-//! when that device asks. A new message is announced to each other attached
-//! device. A device serves the conversation list and one thread, and retries
-//! HELLO until the ack. A standby does not open the store and does not answer.
-
-mod create_list;
-mod directory;
-mod hello;
-mod link;
-mod node_api;
-mod notice;
-mod page;
-mod post_history;
-mod runtime;
-mod store;
+//! The client registers as `discordium-client`, keeps its own token, and serves
+//! the pages. The server registers as `discordium-server`, keeps a different
+//! token, and either holds the record or stands by. It does not serve pages.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
 
-use directory::{choose_role, parse_get_data, role_summary, Role, APP_ALIAS};
-use node_api::{
-    load_token, record_dir, save_token, token_path, NodeClient, DEFAULT_PNET_ADDR,
-    DEFAULT_PUSH_PORT,
+use crate::directory::{choose_role, parse_get_data, role_summary, ProcessKind, Role};
+use crate::node_api::{
+    default_push_port, load_token, record_dir, save_token, token_path, NodeClient,
+    DEFAULT_PNET_ADDR,
 };
-use page::DEFAULT_HTTP_PORT;
-use store::Store;
+use crate::page::DEFAULT_HTTP_PORT;
+use crate::runtime;
+use crate::store::Store;
 
-fn main() -> ExitCode {
-    match run() {
+pub fn main_for(kind: ProcessKind) -> ExitCode {
+    match run(kind) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("discordium: {err}");
+            eprintln!("{}: {err}", kind.alias());
             ExitCode::FAILURE
         }
     }
 }
 
-fn run() -> Result<(), String> {
+fn run(kind: ProcessKind) -> Result<(), String> {
+    let name = kind.alias();
     let pnet_addr = pnet_addr()?;
-    let push_port = push_port()?;
-    let http_port = http_port()?;
-    let token_path = token_path();
+    let push_port = push_port(kind)?;
+    let token_path = token_path(kind);
 
     let push = std::net::UdpSocket::bind(("127.0.0.1", push_port))
         .map_err(|err| format!("bind 127.0.0.1:{push_port}: {err}"))?;
     let client =
         NodeClient::connect(pnet_addr).map_err(|err| format!("connect to {pnet_addr}: {err}"))?;
 
-    eprintln!("discordium: registering with {pnet_addr}");
-    let token = match client.register(push_port) {
+    eprintln!("{name}: registering with {pnet_addr}");
+    let token = match client.register(name, push_port) {
         Ok(token) => {
             save_token(&token_path, &token).map_err(|err| format!("save token: {err}"))?;
             token
         }
         Err(err) => match load_token(&token_path) {
             Ok(Some(token)) => {
-                eprintln!("discordium: register failed ({err}); using the saved token");
+                eprintln!("{name}: register failed ({err}); using the saved token");
                 token
             }
             Ok(None) => return Err(format!("register failed: {err}")),
@@ -72,15 +59,15 @@ fn run() -> Result<(), String> {
         .get_data(&token)
         .map_err(|err| format!("get-data failed: {err}"))?;
     let dir = parse_get_data(&reply).map_err(|err| err.to_string())?;
-    if dir.local_app_alias != APP_ALIAS {
+    if dir.local_app_alias != name {
         return Err(format!(
-            "this token is for '{}', not {APP_ALIAS}",
+            "this token is for '{}', not {name}",
             dir.local_app_alias
         ));
     }
-    let role = choose_role(&dir).map_err(|err| err.to_string())?;
+    let role = choose_role(&dir, kind).map_err(|err| err.to_string())?;
 
-    println!("discordium: {role}");
+    println!("{name}: {role}");
     println!("{}", role_summary(&dir, role));
     if !dir.local_app_approved {
         println!("The local node has not approved this app yet.");
@@ -91,8 +78,9 @@ fn run() -> Result<(), String> {
         token_path.display()
     );
     println!("Push port {push_port}. Stop with Ctrl-C.");
-    match role {
-        Role::Record => {
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    match (kind, role) {
+        (ProcessKind::Server, Role::Record) => {
             let path = record_dir();
             let store = Store::open(&path).map_err(|err| format!("open record: {err}"))?;
             println!(
@@ -102,10 +90,19 @@ fn run() -> Result<(), String> {
             );
             runtime::run_record(&client, &push, token, dir, store)
         }
-        Role::Device => runtime::run_device(&client, &push, token, dir, http_port),
-        Role::Standby => {
+        (ProcessKind::Server, Role::Standby) => {
             std::thread::park();
             Ok(())
+        }
+        (ProcessKind::Client, Role::Device) => {
+            let http_port = http_port()?;
+            runtime::run_device(&client, &push, token, dir, http_port)
+        }
+        (ProcessKind::Client, Role::Record | Role::Standby) => {
+            Err("the client does not keep the record".to_string())
+        }
+        (ProcessKind::Server, Role::Device) => {
+            Err("the server does not serve the interface".to_string())
         }
     }
 }
@@ -132,8 +129,9 @@ fn http_port() -> Result<u16, String> {
     Ok(port)
 }
 
-fn push_port() -> Result<u16, String> {
-    let text = env_or("DISCORDIUM_PUSH_PORT", &DEFAULT_PUSH_PORT.to_string());
+fn push_port(kind: ProcessKind) -> Result<u16, String> {
+    let default = default_push_port(kind);
+    let text = env_or("DISCORDIUM_PUSH_PORT", &default.to_string());
     let port: u16 = text
         .parse()
         .map_err(|_| format!("DISCORDIUM_PUSH_PORT '{text}' is not a port"))?;

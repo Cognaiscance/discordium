@@ -2,8 +2,16 @@
 name = "discordium"
 version = "0.1.0"
 edition = "2021"
-description = "Conversations over pNet. One binary chooses device, record, or standby."
+description = "Conversations over pNet. The client and the server register as different apps."
+
+[lib]
+name = "discordium"
+path = "src/lib.rs"
 
 [[bin]]
-name = "discordium"
-path = "src/main.rs"
+name = "discordium-client"
+path = "src/bin/discordium-client.rs"
+
+[[bin]]
+name = "discordium-server"
+path = "src/bin/discordium-server.rs"

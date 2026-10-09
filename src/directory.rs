@@ -1,11 +1,30 @@
 //! The local node's get-data tree, and the role this process takes from it.
 //!
-//! The reply layout matches pNet's app get-data encoder: a device's certificate
-//! fields sit between its host list and its app list.
+//! The binary decides client or server. The client serves the interface. The
+//! server holds the record when this device is the record holder, and otherwise
+//! stands by. The reply layout matches pNet's app get-data encoder: a device's
+//! certificate fields sit between its host list and its app list.
 
 use std::fmt;
 
-pub const APP_ALIAS: &str = "discordium";
+pub const CLIENT_ALIAS: &str = "discordium-client";
+pub const SERVER_ALIAS: &str = "discordium-server";
+
+/// Which program is running. The names are the aliases registered with pNet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessKind {
+    Client,
+    Server,
+}
+
+impl ProcessKind {
+    pub fn alias(self) -> &'static str {
+        match self {
+            ProcessKind::Client => CLIENT_ALIAS,
+            ProcessKind::Server => SERVER_ALIAS,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Grade {
@@ -23,7 +42,7 @@ pub enum Role {
 impl Role {
     pub fn as_str(self) -> &'static str {
         match self {
-            Role::Device => "device",
+            Role::Device => "client",
             Role::Record => "record",
             Role::Standby => "standby",
         }
@@ -265,21 +284,34 @@ fn read_apps(cur: &mut Cursor<'_>, with_host: bool) -> Result<Vec<AppRecord>, Pa
     Ok(apps)
 }
 
-/// The owner's server that holds the record.
+/// Own device that should hold the record.
 ///
-/// Numbered ranks come first, lowest number first. Wire rank 0 means no rank
-/// and sorts last, the same way pNet treats a missing `sg_rank`. An equal
-/// rank uses the lower device id so two processes do not both open a store.
-/// Contact devices are not candidates.
+/// A candidate runs `discordium-server`. A pending app still counts, so two
+/// servers do not both open a store while approval is outstanding. A
+/// server-grade node wins over a device-grade node. Among that grade, numbered
+/// ranks come first, lowest number first. Wire rank 0 means no rank and sorts
+/// last. An equal rank uses the lower device id. Contact devices are not
+/// candidates.
 pub fn record_holder(dir: &Directory) -> Option<&DeviceRecord> {
     dir.own_devices
         .iter()
-        .filter(|device| device.grade == Grade::Server)
-        .min_by(|a, b| rank_key(a).cmp(&rank_key(b)))
+        .filter(|device| runs_server(dir, device))
+        .min_by(|a, b| holder_key(a).cmp(&holder_key(b)))
 }
 
-fn rank_key(device: &DeviceRecord) -> (bool, u8, [u8; 16]) {
-    (device.sg_rank == 0, device.sg_rank, device.id)
+fn runs_server(dir: &Directory, device: &DeviceRecord) -> bool {
+    if device.id == dir.local_device && dir.local_app_alias == SERVER_ALIAS {
+        return true;
+    }
+    device.apps.iter().any(|app| app.alias == SERVER_ALIAS)
+}
+
+fn holder_key(device: &DeviceRecord) -> (u8, bool, u8, [u8; 16]) {
+    let grade = match device.grade {
+        Grade::Server => 0,
+        Grade::Device => 1,
+    };
+    (grade, device.sg_rank == 0, device.sg_rank, device.id)
 }
 
 /// An app on one device, addressed the way a send names it.
@@ -289,30 +321,30 @@ pub struct Peer {
     pub app: [u8; 16],
 }
 
-/// Approved `discordium` on the record-holding server.
+/// Approved `discordium-server` on the record holder.
 ///
-/// The first approved app of that alias on the record holder is the one a
-/// device hellos. Contact devices are not candidates.
+/// None until that app is approved. The client waits instead of addressing a
+/// different device. Contact devices are not candidates.
 pub fn record_discordium(dir: &Directory) -> Option<Peer> {
     let holder = record_holder(dir)?;
     let app = holder
         .apps
         .iter()
-        .find(|app| app.alias == APP_ALIAS && app.approved)?;
+        .find(|app| app.alias == SERVER_ALIAS && app.approved)?;
     Some(Peer {
         device: holder.id,
         app: app.id,
     })
 }
 
-/// True when `app` is an approved `discordium` on one of this user's devices.
+/// True when `app` is an approved `discordium-client` on one of this user's devices.
 ///
 /// A contact app does not count. An app that is not in the tree yet is false,
 /// which is not a refusal: a later directory can make the same id true.
 pub fn approved_own_discordium(dir: &Directory, app: &[u8; 16]) -> bool {
     dir.own_devices.iter().any(|device| {
         device.apps.iter().any(|candidate| {
-            candidate.id == *app && candidate.approved && candidate.alias == APP_ALIAS
+            candidate.id == *app && candidate.approved && candidate.alias == CLIENT_ALIAS
         })
     })
 }
@@ -325,26 +357,27 @@ pub fn device_of_app(dir: &Directory, app: &[u8; 16]) -> Option<[u8; 16]> {
         .map(|device| device.id)
 }
 
-pub fn choose_role(dir: &Directory) -> Result<Role, RoleError> {
+pub fn choose_role(dir: &Directory, kind: ProcessKind) -> Result<Role, RoleError> {
     let local = dir
         .own_devices
         .iter()
         .find(|device| device.id == dir.local_device)
         .ok_or(RoleError::LocalDeviceMissing)?;
-    if local.grade == Grade::Device {
-        return Ok(Role::Device);
-    }
-    let holder = record_holder(dir);
-    if holder.is_some_and(|holder| holder.id == local.id) {
-        Ok(Role::Record)
-    } else {
-        Ok(Role::Standby)
+    match kind {
+        ProcessKind::Client => Ok(Role::Device),
+        ProcessKind::Server => {
+            if record_holder(dir).is_some_and(|holder| holder.id == local.id) {
+                Ok(Role::Record)
+            } else {
+                Ok(Role::Standby)
+            }
+        }
     }
 }
 
 pub fn role_summary(dir: &Directory, role: Role) -> String {
     match role {
-        Role::Device => "This device serves the interface.".to_string(),
+        Role::Device => "This client serves the interface.".to_string(),
         Role::Record => "This server holds the record.".to_string(),
         Role::Standby => match record_holder(dir) {
             Some(holder) => format!(
@@ -399,10 +432,10 @@ mod tests {
         buf.push(u8::from(approved));
     }
 
-    fn header(local_app: [u8; 16], local_device: [u8; 16], approved: bool) -> Vec<u8> {
+    fn header(local_app: [u8; 16], alias: &str, local_device: [u8; 16], approved: bool) -> Vec<u8> {
         let mut buf = vec![0x00];
         buf.extend_from_slice(&local_app);
-        push_str(&mut buf, "discordium");
+        push_str(&mut buf, alias);
         buf.extend_from_slice(&[127, 0, 0, 1]);
         buf.extend_from_slice(&8790u16.to_be_bytes());
         buf.push(u8::from(approved));
@@ -413,48 +446,66 @@ mod tests {
         buf
     }
 
+    fn push_server(
+        buf: &mut Vec<u8>,
+        device: ([u8; 16], &str, u8, u8, Option<&str>),
+        app: ([u8; 16], bool),
+    ) {
+        let (id, alias, grade, rank, host) = device;
+        let (app, approved) = app;
+        push_device(buf, id, alias, grade, rank, host);
+        buf.push(1);
+        push_own_app(buf, app, SERVER_ALIAS, approved);
+    }
+
     fn lone_device() -> Vec<u8> {
         let local = [0x33; 16];
         let app = [0x11; 16];
-        let mut buf = header(app, local, true);
+        let mut buf = header(app, CLIENT_ALIAS, local, true);
         buf.push(1);
         push_device(&mut buf, local, "laptop", 0, 0, None);
         buf.push(1);
-        push_own_app(&mut buf, app, "discordium", true);
+        push_own_app(&mut buf, app, CLIENT_ALIAS, true);
         buf.push(0);
         buf
     }
 
     #[test]
-    fn device_grade_selects_device() {
+    fn client_process_serves_the_interface() {
         let dir = parse_get_data(&lone_device()).unwrap();
-        assert_eq!(dir.local_app_alias, "discordium");
+        assert_eq!(dir.local_app_alias, CLIENT_ALIAS);
         assert!(dir.local_app_approved);
         assert_eq!(dir.owner_alias, "owner");
         assert_eq!(dir.own_devices.len(), 1);
         assert_eq!(dir.own_devices[0].alias, "laptop");
-        assert_eq!(dir.own_devices[0].apps[0].alias, "discordium");
+        assert_eq!(dir.own_devices[0].apps[0].alias, CLIENT_ALIAS);
         assert!(dir.contacts.is_empty());
-        assert_eq!(choose_role(&dir).unwrap(), Role::Device);
+        assert!(record_holder(&dir).is_none());
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Client).unwrap(),
+            Role::Device
+        );
         assert_eq!(
             role_summary(&dir, Role::Device),
-            "This device serves the interface."
+            "This client serves the interface."
         );
     }
 
     #[test]
-    fn device_stays_device_when_an_own_server_exists() {
+    fn client_stays_client_beside_a_server() {
         let local = [0x33; 16];
         let server = [0x01; 16];
         let app = [0x11; 16];
-        let mut buf = header(app, local, false);
+        let mut buf = header(app, CLIENT_ALIAS, local, false);
         buf.push(2);
         push_device(&mut buf, local, "laptop", 0, 0, None);
         buf.push(1);
-        push_own_app(&mut buf, app, "discordium", false);
-        push_device(&mut buf, server, "home", 1, 1, Some("10.0.0.2:7777"));
-        buf.push(1);
-        push_own_app(&mut buf, [0x12; 16], "discordium", true);
+        push_own_app(&mut buf, app, CLIENT_ALIAS, false);
+        push_server(
+            &mut buf,
+            (server, "home", 1, 1, Some("10.0.0.2:7777")),
+            ([0x12; 16], true),
+        );
         // A contact server with a lower rank must not become the record.
         buf.push(1);
         push_str(&mut buf, "other");
@@ -470,15 +521,19 @@ mod tests {
         );
         buf.push(1);
         buf.extend_from_slice(&[0x77; 16]);
-        push_str(&mut buf, "discordium");
+        push_str(&mut buf, SERVER_ALIAS);
 
         let dir = parse_get_data(&buf).unwrap();
         assert!(!dir.local_app_approved);
         assert_eq!(dir.contacts.len(), 1);
-        assert_eq!(dir.contacts[0].devices[0].apps[0].alias, "discordium");
+        assert_eq!(dir.contacts[0].devices[0].apps[0].alias, SERVER_ALIAS);
         assert!(dir.contacts[0].devices[0].apps[0].approved);
-        assert_eq!(choose_role(&dir).unwrap(), Role::Device);
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Client).unwrap(),
+            Role::Device
+        );
         assert_eq!(record_holder(&dir).unwrap().alias, "home");
+        assert_eq!(record_discordium(&dir).unwrap().app, [0x12; 16]);
     }
 
     #[test]
@@ -486,17 +541,25 @@ mod tests {
         let local = [0x10; 16];
         let other = [0x20; 16];
         let app = [0x11; 16];
-        let mut buf = header(app, local, true);
+        let mut buf = header(app, SERVER_ALIAS, local, true);
         buf.push(2);
-        push_device(&mut buf, other, "spare", 1, 2, Some("10.0.0.3:7777"));
-        buf.push(0);
-        push_device(&mut buf, local, "home", 1, 1, Some("10.0.0.2:7777"));
-        buf.push(1);
-        push_own_app(&mut buf, app, "discordium", true);
+        push_server(
+            &mut buf,
+            (other, "spare", 1, 2, Some("10.0.0.3:7777")),
+            ([0x12; 16], true),
+        );
+        push_server(
+            &mut buf,
+            (local, "home", 1, 1, Some("10.0.0.2:7777")),
+            (app, true),
+        );
         buf.push(0);
 
         let dir = parse_get_data(&buf).unwrap();
-        assert_eq!(choose_role(&dir).unwrap(), Role::Record);
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Record
+        );
         assert_eq!(
             role_summary(&dir, Role::Record),
             "This server holds the record."
@@ -508,18 +571,25 @@ mod tests {
         let local = [0x20; 16];
         let other = [0x10; 16];
         let app = [0x11; 16];
-        let mut buf = header(app, local, true);
+        let mut buf = header(app, SERVER_ALIAS, local, true);
         buf.push(2);
-        push_device(&mut buf, other, "home", 1, 1, Some("10.0.0.2:7777"));
-        buf.push(1);
-        push_own_app(&mut buf, [0x12; 16], "discordium", true);
-        push_device(&mut buf, local, "spare", 1, 2, Some("10.0.0.3:7777"));
-        buf.push(1);
-        push_own_app(&mut buf, app, "discordium", true);
+        push_server(
+            &mut buf,
+            (other, "home", 1, 1, Some("10.0.0.2:7777")),
+            ([0x12; 16], true),
+        );
+        push_server(
+            &mut buf,
+            (local, "spare", 1, 2, Some("10.0.0.3:7777")),
+            (app, true),
+        );
         buf.push(0);
 
         let dir = parse_get_data(&buf).unwrap();
-        assert_eq!(choose_role(&dir).unwrap(), Role::Standby);
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Standby
+        );
         assert_eq!(
             role_summary(&dir, Role::Standby),
             "This server is standing by and will not open a store. The record is held by home."
@@ -532,27 +602,27 @@ mod tests {
         let higher = [0x02; 16];
         let app = [0x11; 16];
 
-        let mut as_lower = header(app, lower, true);
+        let mut as_lower = header(app, SERVER_ALIAS, lower, true);
         as_lower.push(2);
-        push_device(&mut as_lower, higher, "b", 1, 1, None);
-        as_lower.push(0);
-        push_device(&mut as_lower, lower, "a", 1, 1, None);
-        as_lower.push(1);
-        push_own_app(&mut as_lower, app, "discordium", true);
+        push_server(&mut as_lower, (higher, "b", 1, 1, None), ([0x12; 16], true));
+        push_server(&mut as_lower, (lower, "a", 1, 1, None), (app, true));
         as_lower.push(0);
         let dir = parse_get_data(&as_lower).unwrap();
-        assert_eq!(choose_role(&dir).unwrap(), Role::Record);
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Record
+        );
 
-        let mut as_higher = header(app, higher, true);
+        let mut as_higher = header(app, SERVER_ALIAS, higher, true);
         as_higher.push(2);
-        push_device(&mut as_higher, lower, "a", 1, 1, None);
-        as_higher.push(0);
-        push_device(&mut as_higher, higher, "b", 1, 1, None);
-        as_higher.push(1);
-        push_own_app(&mut as_higher, app, "discordium", true);
+        push_server(&mut as_higher, (lower, "a", 1, 1, None), ([0x12; 16], true));
+        push_server(&mut as_higher, (higher, "b", 1, 1, None), (app, true));
         as_higher.push(0);
         let dir = parse_get_data(&as_higher).unwrap();
-        assert_eq!(choose_role(&dir).unwrap(), Role::Standby);
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Standby
+        );
     }
 
     #[test]
@@ -560,17 +630,17 @@ mod tests {
         let local = [0x20; 16];
         let ranked = [0x10; 16];
         let app = [0x11; 16];
-        let mut buf = header(app, local, true);
+        let mut buf = header(app, SERVER_ALIAS, local, true);
         buf.push(2);
-        push_device(&mut buf, ranked, "home", 1, 1, None);
-        buf.push(0);
-        push_device(&mut buf, local, "spare", 1, 0, None);
-        buf.push(1);
-        push_own_app(&mut buf, app, "discordium", true);
+        push_server(&mut buf, (ranked, "home", 1, 1, None), ([0x12; 16], true));
+        push_server(&mut buf, (local, "spare", 1, 0, None), (app, true));
         buf.push(0);
 
         let dir = parse_get_data(&buf).unwrap();
-        assert_eq!(choose_role(&dir).unwrap(), Role::Standby);
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Standby
+        );
         assert_eq!(record_holder(&dir).unwrap().id, ranked);
     }
 
@@ -578,15 +648,114 @@ mod tests {
     fn a_lone_unranked_server_holds_the_record() {
         let local = [0x10; 16];
         let app = [0x11; 16];
-        let mut buf = header(app, local, true);
+        let mut buf = header(app, SERVER_ALIAS, local, true);
         buf.push(1);
-        push_device(&mut buf, local, "home", 1, 0, None);
-        buf.push(1);
-        push_own_app(&mut buf, app, "discordium", true);
+        push_server(&mut buf, (local, "home", 1, 0, None), (app, true));
         buf.push(0);
 
         let dir = parse_get_data(&buf).unwrap();
-        assert_eq!(choose_role(&dir).unwrap(), Role::Record);
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Record
+        );
+    }
+
+    #[test]
+    fn server_grade_beats_a_device_grade_server() {
+        let laptop = [0x01; 16];
+        let home = [0x20; 16];
+        let laptop_server = [0x13; 16];
+        let home_server = [0x21; 16];
+        let mut on_laptop = header(laptop_server, SERVER_ALIAS, laptop, true);
+        on_laptop.push(2);
+        push_server(
+            &mut on_laptop,
+            (laptop, "laptop", 0, 0, None),
+            (laptop_server, true),
+        );
+        push_server(
+            &mut on_laptop,
+            (home, "home", 1, 1, Some("10.0.0.2:7777")),
+            (home_server, true),
+        );
+        on_laptop.push(0);
+        let dir = parse_get_data(&on_laptop).unwrap();
+        assert_eq!(record_holder(&dir).unwrap().id, home);
+        assert_eq!(record_discordium(&dir).unwrap().app, home_server);
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Standby
+        );
+
+        let mut on_home = header(home_server, SERVER_ALIAS, home, true);
+        on_home.push(2);
+        push_server(
+            &mut on_home,
+            (laptop, "laptop", 0, 0, None),
+            (laptop_server, true),
+        );
+        push_server(
+            &mut on_home,
+            (home, "home", 1, 1, Some("10.0.0.2:7777")),
+            (home_server, true),
+        );
+        on_home.push(0);
+        let dir = parse_get_data(&on_home).unwrap();
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Record
+        );
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Client).unwrap(),
+            Role::Device
+        );
+    }
+
+    #[test]
+    fn device_grade_server_holds_the_record_alone() {
+        let laptop = [0x10; 16];
+        let home = [0x20; 16];
+        let client = [0x11; 16];
+        let server_app = [0x12; 16];
+        let mut buf = header(server_app, SERVER_ALIAS, laptop, true);
+        buf.push(2);
+        push_device(&mut buf, laptop, "laptop", 0, 0, None);
+        buf.push(2);
+        push_own_app(&mut buf, client, CLIENT_ALIAS, true);
+        push_own_app(&mut buf, server_app, SERVER_ALIAS, true);
+        push_device(&mut buf, home, "home", 1, 1, Some("10.0.0.2:7777"));
+        buf.push(0);
+        buf.push(0);
+
+        let dir = parse_get_data(&buf).unwrap();
+        assert_eq!(record_holder(&dir).unwrap().id, laptop);
+        assert_eq!(record_discordium(&dir).unwrap().app, server_app);
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Record
+        );
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Client).unwrap(),
+            Role::Device
+        );
+    }
+
+    #[test]
+    fn unapproved_server_is_not_addressed() {
+        let local = [0x10; 16];
+        let app = [0x11; 16];
+        let mut buf = header(app, SERVER_ALIAS, local, false);
+        buf.push(1);
+        push_server(&mut buf, (local, "home", 1, 1, None), (app, false));
+        buf.push(0);
+
+        let dir = parse_get_data(&buf).unwrap();
+        assert_eq!(record_holder(&dir).unwrap().id, local);
+        assert!(record_discordium(&dir).is_none());
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap(),
+            Role::Record
+        );
     }
 
     #[test]
@@ -606,14 +775,18 @@ mod tests {
     #[test]
     fn missing_local_device_has_no_role() {
         let app = [0x11; 16];
-        let mut buf = header(app, [0x33; 16], true);
+        let mut buf = header(app, CLIENT_ALIAS, [0x33; 16], true);
         buf.push(1);
         push_device(&mut buf, [0x99; 16], "someone-else", 0, 0, None);
         buf.push(0);
         buf.push(0);
         let dir = parse_get_data(&buf).unwrap();
         assert_eq!(
-            choose_role(&dir).unwrap_err(),
+            choose_role(&dir, ProcessKind::Client).unwrap_err(),
+            RoleError::LocalDeviceMissing
+        );
+        assert_eq!(
+            choose_role(&dir, ProcessKind::Server).unwrap_err(),
             RoleError::LocalDeviceMissing
         );
     }
