@@ -4,8 +4,8 @@
 //! device, record, or standby from get-data. The record role keeps conversations,
 //! acks HELLO from an approved device, and opens, lists, or extends a conversation
 //! when that device asks. A new message is announced to each other attached
-//! device. A device retries HELLO until the ack. A standby does not open the
-//! store and does not answer.
+//! device. A device serves the conversation list and retries HELLO until the
+//! ack. A standby does not open the store and does not answer.
 
 mod create_list;
 mod directory;
@@ -13,6 +13,7 @@ mod hello;
 mod link;
 mod node_api;
 mod notice;
+mod page;
 mod post_history;
 mod runtime;
 mod store;
@@ -25,6 +26,7 @@ use node_api::{
     load_token, record_dir, save_token, token_path, NodeClient, DEFAULT_PNET_ADDR,
     DEFAULT_PUSH_PORT,
 };
+use page::DEFAULT_HTTP_PORT;
 use store::Store;
 
 fn main() -> ExitCode {
@@ -40,6 +42,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let pnet_addr = pnet_addr()?;
     let push_port = push_port()?;
+    let http_port = http_port()?;
     let token_path = token_path();
 
     let push = std::net::UdpSocket::bind(("127.0.0.1", push_port))
@@ -99,7 +102,7 @@ fn run() -> Result<(), String> {
             );
             runtime::run_record(&client, &push, token, dir, store)
         }
-        Role::Device => runtime::run_device(&client, &push, token, dir),
+        Role::Device => runtime::run_device(&client, &push, token, dir, http_port),
         Role::Standby => {
             std::thread::park();
             Ok(())
@@ -116,6 +119,17 @@ fn pnet_addr() -> Result<SocketAddr, String> {
         return Err("PNET_ADDR must be IPv4".to_string());
     }
     Ok(addr)
+}
+
+fn http_port() -> Result<u16, String> {
+    let text = env_or("DISCORDIUM_HTTP_PORT", &DEFAULT_HTTP_PORT.to_string());
+    let port: u16 = text
+        .parse()
+        .map_err(|_| format!("DISCORDIUM_HTTP_PORT '{text}' is not a port"))?;
+    if port == 0 {
+        return Err("DISCORDIUM_HTTP_PORT must not be 0".to_string());
+    }
+    Ok(port)
 }
 
 fn push_port() -> Result<u16, String> {
