@@ -3,8 +3,8 @@
 //! The device retries HELLO until the record server acks it. The record server
 //! also opens and lists conversations, and saves messages, for an approved
 //! device. A new message is announced to each other attached device, which
-//! then asks for history. A device also serves the conversation list. Tests
-//! drive those same types on the fake socket.
+//! then asks for history. A device also serves the conversation list and one
+//! thread. Tests drive those same types on the fake socket.
 
 use std::net::{TcpListener, UdpSocket};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -75,6 +75,19 @@ pub fn run_device(
         });
         if let Some((sender, payload)) = recv_push(push) {
             on_device_push(client, &token, &mut hello, &mut history, sender, &payload);
+            // A notice that arrives while a page request is waiting stays with
+            // DeviceHistory. This read of the push socket must not run inside that wait.
+            conversations.on_notice(sender, &payload, |request| {
+                ask_record(
+                    client,
+                    push,
+                    &token,
+                    &directory,
+                    &mut hello,
+                    &mut history,
+                    request,
+                )
+            });
         }
     }
 }
