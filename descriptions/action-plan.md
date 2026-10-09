@@ -46,10 +46,12 @@ open a second store.
 
 ## How a message moves
 
-1. The device UI sends the message to the server's Discordium.
-2. The server saves it and answers with the saved message.
-3. The device shows that saved copy.
-4. Another of this user's devices, if it is attached, hears that the
+1. The device asks the server to open a conversation.
+2. The server saves it and answers with that conversation.
+3. The device sends a message in that conversation.
+4. The server saves the message and answers with the saved copy.
+5. The device shows that saved copy.
+6. Another of this user's devices, if it is attached, hears that the
    conversation changed and then asks for the new messages.
 
 The server does not push the record on its own. A device receives a
@@ -87,8 +89,9 @@ retry land once.
 
 ## Interface
 
-Loopback HTTP on the device, default `127.0.0.1:8788`. Three views:
+Loopback HTTP on the device, default `127.0.0.1:8788`.
 
+- A control that opens a conversation. The new row appears after the server answers.
 - The list of conversations, fetched from the server.
 - One conversation, with its messages fetched from the server.
 - A box that sends a message and then shows what the server saved.
@@ -98,65 +101,101 @@ Relative links, so the pages work on that port alone. No second password.
 ## Work, in order
 
 Each step is its own change, branched from `develop`, and lands through a
-pull request into `develop`.
+pull request into `develop`. Steps 1–8 are finished when their tests pass.
+Step 9 is finished when the two-node run has been done. Later steps call
+the code the earlier steps already merged. They do not reopen it.
+
+Payloads are opaque to pNet. Every one of them begins with a version byte
+and a type byte. The server reads or writes only after the push's
+`sender_app_id` resolves to an approved `discordium` on one of this user's
+own devices.
 
 ### 1. Crate and role
 
-- Cargo package `discordium`, edition 2021, one binary.
-- Register with the local node, remember the token, and call get-data.
-- Choose device, record-holding server, or standby from that tree.
-- Tests use a scripted get-data reply, not a live node.
+Cargo package `discordium`, edition 2021, one binary. Register with the
+local node, remember the token, and call get-data. From that tree choose
+device, record-holding server, or standby.
+
+Finished when a scripted get-data reply selects each of those three roles.
+No live node.
 
 ### 2. Record
 
-- Create and reopen `~/.pnet/discordium/`.
-- Add a conversation, append a message, list conversations, and read
-  messages after a cursor.
-- A repeated device message id does not create a second row.
-- Tests cover an empty store, a reopen after process exit, and the repeat.
+Create and reopen `~/.pnet/discordium/`. Add a conversation, append a
+message, list conversations, and read messages after a cursor. A repeated
+device message id does not create a second row.
 
-### 3. Ask and answer
+Finished when tests cover an empty store, a reopen after the process exits,
+and that repeated id.
 
-App payloads, opaque to pNet:
+### 3. Hello
 
-| Type | Direction | Body |
-|---|---|---|
-| `HELLO` | device → server | The device is up. |
-| `HELLO_ACK` | server → device | The server accepts this device. |
-| `LIST_REQ` / `LIST_RESP` | device ↔ server | The conversation list. |
-| `HISTORY_REQ` / `HISTORY_RESP` | device ↔ server | Messages after a cursor, and whether more remain. |
-| `POST` / `POST_ACK` | device ↔ server | Save one message, or return the copy already saved. |
-| `NOTICE` | server → attached device | A conversation changed. The device then sends `HISTORY_REQ`. |
+`HELLO` from the device, `HELLO_ACK` from the server. The device retries
+until the ack. A retry does not attach the device twice.
 
-The server checks the stamped `app_id` before it reads or writes. A device
-retries until `POST_ACK` or `HELLO_ACK`. Tests encode each message and run
-both roles in one process with a fake socket.
+Finished when both roles run in one process on a fake socket: an approved
+own device is acked, and any other sender is ignored.
 
-### 4. Device pages
+### 4. Create and list
 
-- Serve the three views on `127.0.0.1:8788`.
-- The list and the thread render only what the server returned.
-- Sending a message waits for `POST_ACK`, then draws the saved text.
-- A `NOTICE` triggers `HISTORY_REQ` for that conversation.
+`CREATE_REQ` / `CREATE_RESP` open a conversation. `LIST_REQ` / `LIST_RESP`
+return the conversations. The same client id returns the conversation
+already saved.
 
-### 5. Run it on two nodes
+Finished when a created conversation appears in the list once. Still the
+fake socket from step 3.
 
-Document the commands in the README:
+### 5. Post and history
 
-- Start pNet on a server and on a device.
-- Start `discordium` on both.
-- Approve both in Config → Pending Apps.
-- Open the device UI, send a message, stop the device process, start it
-  again, and see the same message because the server still has it.
+`POST` / `POST_ACK` save one message, or return the copy already saved.
+`HISTORY_REQ` / `HISTORY_RESP` return messages after a cursor and say
+whether more remain. The device retries a post until the ack.
 
-`PNET_AUTO_APPROVE_APPS` stays a test switch. A real node approves the app
-by hand.
+Finished when one saved message is read back after a cursor, a repeated
+post is one row, and a history that does not fit in one datagram reports
+that more remain.
+
+### 6. Notice
+
+`NOTICE` tells each other attached device that a conversation changed. That
+device then sends `HISTORY_REQ`.
+
+Finished when device A posts and device B, already attached on the fake
+socket, asks and receives the new message.
+
+### 7. Conversation list
+
+Serve `127.0.0.1:8788` on a device. One page lists conversations and opens
+a new one. The list renders only what `LIST_RESP` returned. Opening one
+waits for `CREATE_RESP`, then shows the new row.
+
+Finished when a page test creates a conversation and the following list
+contains that row and no other.
+
+### 8. Thread
+
+A second page shows one conversation. It renders only what `HISTORY_RESP`
+returned. Sending waits for `POST_ACK`, then draws the saved text. A
+`NOTICE` for this conversation sends `HISTORY_REQ` and adds the new
+messages.
+
+Finished when a page test shows an empty thread, a send draws the saved
+text, and a notice from a second attached device adds that device's message.
+
+### 9. Two nodes
+
+Write the run commands in the README. `PNET_AUTO_APPROVE_APPS` stays a test
+switch. A real node approves the app by hand.
+
+Finished when these have been done on a running server and two devices:
+
+- The device serves the pages. The server process does not.
+- A message sent on the first device is still there after that process
+  restarts, because the server kept it.
+- The second device sees that message by asking.
 
 ## Done when
 
-- A device shows the interface, and a server of the same user does not.
-- The server still has every message after the device process is gone.
-- A second device of the same user sees those messages by asking.
-- A payload whose sender is not this user's approved Discordium changes
-  nothing.
-- pNet core is untouched.
+Step 9 has been run, so a person can open the interface on a device, leave,
+come back, and see the same conversations on another of their devices. The
+check that a stranger changes nothing is step 3. pNet core is untouched.
