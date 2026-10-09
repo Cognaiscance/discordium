@@ -57,6 +57,22 @@ pub fn token_path() -> PathBuf {
     PathBuf::from("discordium-token")
 }
 
+/// Directory the record-holding server owns. The token file lives here too.
+/// `DISCORDIUM_DIR` overrides it. A device or a standby does not open this.
+pub fn record_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("DISCORDIUM_DIR") {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home).join(".pnet/discordium");
+        }
+    }
+    PathBuf::from(".pnet/discordium")
+}
+
 pub fn save_token(path: &Path, token: &[u8; 16]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {

@@ -1,19 +1,22 @@
 //! Discordium. One binary, started on each machine that takes part.
 //!
-//! This step registers with the local node, remembers the token, and chooses
-//! device, record, or standby from get-data. It does not store conversations
-//! and it does not serve pages.
+//! The process registers with the local node, remembers the token, and chooses
+//! device, record, or standby from get-data. The record role keeps conversations
+//! in its directory. A device or a standby does not open that store.
 
 mod directory;
 mod node_api;
+mod store;
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
 
-use directory::{choose_role, parse_get_data, role_summary, APP_ALIAS};
+use directory::{choose_role, parse_get_data, role_summary, Role, APP_ALIAS};
 use node_api::{
-    load_token, save_token, token_path, NodeClient, DEFAULT_PNET_ADDR, DEFAULT_PUSH_PORT,
+    load_token, record_dir, save_token, token_path, NodeClient, DEFAULT_PNET_ADDR,
+    DEFAULT_PUSH_PORT,
 };
+use store::Store;
 
 fn main() -> ExitCode {
     match run() {
@@ -76,6 +79,18 @@ fn run() -> Result<(), String> {
         token_path.display()
     );
     println!("Push port {push_port}. Stop with Ctrl-C.");
+    let _record = if role == Role::Record {
+        let path = record_dir();
+        let store = Store::open(&path).map_err(|err| format!("open record: {err}"))?;
+        println!(
+            "Record directory {} ({} conversations).",
+            path.display(),
+            store.list_conversations().len()
+        );
+        Some(store)
+    } else {
+        None
+    };
     std::thread::park();
     Ok(())
 }
