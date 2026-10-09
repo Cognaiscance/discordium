@@ -49,4 +49,9 @@ message. A repeated post does not send another notice.
 A device serves the conversation list at `http://127.0.0.1:8788/`.
 `DISCORDIUM_HTTP_PORT` overrides that port. The list shows only the
 conversations `LIST_RESP` returned. Opening one waits for `CREATE_RESP`,
-then that list shows the new row. The thread page is a later step.
+then that list shows the new row.
+
+The thread page shows one conversation. It renders only the messages
+`HISTORY_RESP` returned. Sending waits for `POST_ACK`, then draws the
+saved text. A `NOTICE` for that conversation sends `HISTORY_REQ` and adds
+the new messages.
