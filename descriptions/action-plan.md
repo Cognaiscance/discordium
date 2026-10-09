@@ -10,21 +10,22 @@ The node approves it in Config. pNet stays a dumb pipe: register, get-data,
 send, and push. pNet does not know what a conversation is, and it does not
 store one.
 
-The process reads its own device from get-data and picks a role:
+One program starts a client process, a server process, or both. Both may
+run on the same machine, against that machine's local node.
 
-| Grade | Role |
-|---|---|
-| Device | The interface. Show conversations, accept what the person types, and ask this user's server for the record. |
-| Server | The record. Save every conversation and every message. When a device asks, send that device the part it asked for. |
+| Process | App name | Role |
+|---|---|---|
+| Client | `discordium-client` | The interface. Show conversations, accept what the person types, and ask this user's server for the record. Do not keep the record. |
+| Server | `discordium-server` | The record. Save every conversation and every message. When a client asks, send that client the part it asked for. Do not open the interface. |
 
-A device does not keep the record. Restarting it, or moving to another
+A client does not keep the record. Restarting it, or moving to another
 device, comes back by asking the server again. A server does not serve the
 chat interface. Its job is to save and to answer.
 
 A device-grade node does not serve the owner portal, so the interface is
-Discordium's own. It is not a browser page and not a portal page. There is
-one program. The grade chooses the role. The server runs that same program,
-speaks the app protocol only, and does not open the interface.
+Discordium's own. It is not a browser page and not a portal page. The
+client opens it. The server process speaks the app protocol only and does
+not open it, including when both processes are on that device.
 
 The first version is this user's own devices and this user's server. A
 device talks only to that user's Discordium. Other pNet users are a later
@@ -38,24 +39,26 @@ decision, after this store and this interface work.
 - Accounts inside Discordium. The person is the user the local pNet node
   already is.
 - Any change to pNet core, the installer, or the owner portal. The installer
-  installs `pnet` only. Someone starts `discordium` on the device and on the
-  server.
+  installs `pnet` only. Someone starts the client and the server.
 
-If this user has more than one server, the lowest `sg_rank` holds the record.
-Any other server-grade process starts, says it is standing by, and does not
-open a second store.
+The record holder is an approved `discordium-server` on this user's own
+devices. A server-grade node wins over a device-grade node. Among
+server-grade nodes, the lowest `sg_rank` wins. A rank of 0 means no rank and
+sorts last. An equal rank uses the lower device id. Any other server
+process starts, says it is standing by, and does not open a second store.
+A client on the same machine as the holder uses that local server.
 
 ## How a message moves
 
-1. The device asks the server to open a conversation.
+1. The client asks the server to open a conversation.
 2. The server saves it and answers with that conversation.
-3. The device sends a message in that conversation.
+3. The client sends a message in that conversation.
 4. The server saves the message and answers with the saved copy.
-5. The device shows that saved copy.
-6. Another of this user's devices, if it is attached, hears that the
+5. The client shows that saved copy.
+6. Another of this user's clients, if it is attached, hears that the
    conversation changed and then asks for the new messages.
 
-The server does not push the record on its own. A device receives a
+The server does not push the record on its own. A client receives a
 conversation by asking. pNet send does not retry and does not promise
 delivery, so Discordium acks and the sender retries. Applying the same
 message twice is the same as applying it once.
@@ -66,17 +69,19 @@ several asks, each continuing from the last message the device already has.
 
 ## Identity
 
-Register as alias `discordium` and protocol `application/discordium`.
+The client registers as alias `discordium-client`. The server registers as
+alias `discordium-server`. Both use protocol `application/discordium`.
 Discovery uses the alias. The `app_id` comes back from get-data and is
-different on every device.
+different for each process.
 
 The server accepts a request only when the push's `sender_app_id` resolves
-to an approved `discordium` on one of this user's own devices. A claim
+to an approved `discordium-client` on one of this user's own devices. A claim
 inside the payload is not the identity. Until get-data shows that app, the
 server waits. It does not treat "not visible yet" as a permanent refusal.
 
-The device finds the server the same way: own devices, grade server, lowest
-`sg_rank`, approved alias `discordium`, then that device's `app_id`.
+The client finds the server by the record-holder rule above: an approved
+`discordium-server` on this user's own devices, then that process's
+`app_id`.
 
 ## Store
 
@@ -105,21 +110,23 @@ Until that interface exists, a device serves loopback pages at
 - A box that sends a message and then shows what the server saved.
 
 Relative links, so the pages work on that port alone. No second password.
-Step 10 replaces these pages. The server does not listen for them.
+Step 11 replaces these pages. The server process does not listen for them.
 
 ## Work, in order
 
 Each step is its own change, branched from `develop`, and lands through a
 pull request into `develop`. Steps 1–8 are finished when their tests pass.
-Step 9 is finished when the two-node run has been done. Step 10 is finished
-when a device shows the interface without a browser and a server does not
-open one. Later steps call the code the earlier steps already merged. They
-do not reopen it.
+Step 9 is finished when a client and a server can run on one machine under
+those two app names. Step 10 is finished when the two-node run has been
+done. Step 11 is finished when a client shows the interface without a
+browser and a server does not open one. Later steps call the code the
+earlier steps already merged. They do not reopen it. Step 9 is the change
+to the single alias and the grade-only role from step 1.
 
 Payloads are opaque to pNet. Every one of them begins with a version byte
 and a type byte. The server reads or writes only after the push's
-`sender_app_id` resolves to an approved `discordium` on one of this user's
-own devices.
+`sender_app_id` resolves to an approved `discordium-client` on one of this
+user's own devices.
 
 ### 1. Crate and role
 
@@ -193,35 +200,56 @@ messages.
 Finished when a page test shows an empty thread, a send draws the saved
 text, and a notice from a second attached device adds that device's message.
 
-### 9. Two nodes
+### 9. Client and server
+
+Steps 1–8 registered one alias, `discordium`, and chose the role from the
+node grade. This step changes that.
+
+The client process registers as `discordium-client`. The server process
+registers as `discordium-server`. Each keeps its own token file, so the two
+processes do not replace each other's token. The record file stays with the
+server. Each binds its own push port. The defaults are `8790` for the client
+and `8791` for the server, so both can bind on one machine. The client
+listens on `127.0.0.1:8788`. The server does not.
+
+The client finds an approved `discordium-server` by the record-holder rule.
+The server accepts an approved `discordium-client`. A client and a server
+on the same machine use that machine's local node for both registrations.
+
+Finished when tests start both processes against one node. The client is
+`discordium-client` and serves the pages. The server is `discordium-server`,
+serves no pages, and answers the client.
+
+### 10. Two nodes
 
 Write the run commands in the README. `PNET_AUTO_APPROVE_APPS` stays a test
-switch. A real node approves the app by hand.
+switch. A real node approves each app by hand.
 
-Finished when these have been done on a running server and two devices:
+Finished when these have been done on a running server and two clients:
 
-- The device serves the pages. The server process does not.
-- A message sent on the first device is still there after that process
+- The client serves the pages. The server process does not.
+- A message sent on the first client is still there after that process
   restarts, because the server kept it.
-- The second device sees that message by asking.
+- The second client sees that message by asking.
 
-### 10. Device interface
+### 11. Device interface
 
-Replace the loopback pages with the terminal interface. The device process
-draws it where it was started. A person does not open a web browser. Record
-and standby do not draw it, and they do not listen on `8788`.
+Replace the loopback pages with the terminal interface. The client process
+draws it where it was started. A person does not open a web browser. The
+server process does not draw it, and it does not listen on `8788`.
 
 The list shows only what `LIST_RESP` returned. Opening a conversation waits
 for `CREATE_RESP`. A thread shows only what `HISTORY_RESP` returned. Sending
 waits for `POST_ACK`, then shows the saved text. A `NOTICE` for the open
 conversation sends `HISTORY_REQ` and adds the new messages.
 
-Finished when a device-grade run shows that interface without a browser, and
-a server-grade run does not open an interface.
+Finished when a client run shows that interface without a browser, and a
+server run does not open an interface.
 
 ## Done when
 
-Step 9 has been run, so a person can use the pages on a device, leave, come
-back, and see the same conversations on another of their devices. Step 10
-replaces those pages with the terminal interface. The check that a stranger
-changes nothing is step 3. pNet core is untouched.
+Step 10 has been run, so a person can use the pages on a client, leave, come
+back, and see the same conversations on another of their clients. The client
+and the server can also be two processes on one machine. Step 11 replaces
+those pages with the terminal interface. The check that a stranger changes
+nothing is step 3. pNet core is untouched.
