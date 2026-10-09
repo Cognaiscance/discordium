@@ -21,9 +21,10 @@ A device does not keep the record. Restarting it, or moving to another
 device, comes back by asking the server again. A server does not serve the
 chat interface. Its job is to save and to answer.
 
-A device-grade node does not serve the owner portal, so the interface cannot
-be a portal page. Discordium serves its own pages on the device. The server
-process speaks the app protocol only.
+A device-grade node does not serve the owner portal, so the interface is
+Discordium's own. It is not a browser page and not a portal page. There is
+one program. The grade chooses the role. The server runs that same program,
+speaks the app protocol only, and does not open the interface.
 
 The first version is this user's own devices and this user's server. A
 device talks only to that user's Discordium. Other pNet users are a later
@@ -89,7 +90,14 @@ retry land once.
 
 ## Interface
 
-Loopback HTTP on the device, default `127.0.0.1:8788`.
+The device shows the interface. The server process does not open one.
+
+The interface a person keeps is not a web browser. The device process draws
+it on the terminal where that process was started. Record and standby do
+not draw it.
+
+Until that interface exists, a device serves loopback pages at
+`127.0.0.1:8788` so the record can be seen:
 
 - A control that opens a conversation. The new row appears after the server answers.
 - The list of conversations, fetched from the server.
@@ -97,13 +105,16 @@ Loopback HTTP on the device, default `127.0.0.1:8788`.
 - A box that sends a message and then shows what the server saved.
 
 Relative links, so the pages work on that port alone. No second password.
+Step 10 replaces these pages. The server does not listen for them.
 
 ## Work, in order
 
 Each step is its own change, branched from `develop`, and lands through a
 pull request into `develop`. Steps 1–8 are finished when their tests pass.
-Step 9 is finished when the two-node run has been done. Later steps call
-the code the earlier steps already merged. They do not reopen it.
+Step 9 is finished when the two-node run has been done. Step 10 is finished
+when a device shows the interface without a browser and a server does not
+open one. Later steps call the code the earlier steps already merged. They
+do not reopen it.
 
 Payloads are opaque to pNet. Every one of them begins with a version byte
 and a type byte. The server reads or writes only after the push's
@@ -194,8 +205,23 @@ Finished when these have been done on a running server and two devices:
   restarts, because the server kept it.
 - The second device sees that message by asking.
 
+### 10. Device interface
+
+Replace the loopback pages with the terminal interface. The device process
+draws it where it was started. A person does not open a web browser. Record
+and standby do not draw it, and they do not listen on `8788`.
+
+The list shows only what `LIST_RESP` returned. Opening a conversation waits
+for `CREATE_RESP`. A thread shows only what `HISTORY_RESP` returned. Sending
+waits for `POST_ACK`, then shows the saved text. A `NOTICE` for the open
+conversation sends `HISTORY_REQ` and adds the new messages.
+
+Finished when a device-grade run shows that interface without a browser, and
+a server-grade run does not open an interface.
+
 ## Done when
 
-Step 9 has been run, so a person can open the interface on a device, leave,
-come back, and see the same conversations on another of their devices. The
-check that a stranger changes nothing is step 3. pNet core is untouched.
+Step 9 has been run, so a person can use the pages on a device, leave, come
+back, and see the same conversations on another of their devices. Step 10
+replaces those pages with the terminal interface. The check that a stranger
+changes nothing is step 3. pNet core is untouched.
