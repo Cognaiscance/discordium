@@ -44,5 +44,9 @@ reply says more remain.
 
 When that save is a new message, the record server sends `NOTICE` to each
 other attached device. That device sends `HISTORY_REQ` and reads the new
-message. A repeated post does not send another notice. The pages are a
-later step.
+message. A repeated post does not send another notice.
+
+A device serves the conversation list at `http://127.0.0.1:8788/`.
+`DISCORDIUM_HTTP_PORT` overrides that port. The list shows only the
+conversations `LIST_RESP` returned. Opening one waits for `CREATE_RESP`,
+then that list shows the new row. The thread page is a later step.
