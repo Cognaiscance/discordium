@@ -3,14 +3,16 @@
 //! The process registers with the local node, remembers the token, and chooses
 //! device, record, or standby from get-data. The record role keeps conversations,
 //! acks HELLO from an approved device, and opens, lists, or extends a conversation
-//! when that device asks. A device retries HELLO until the ack. A standby does not
-//! open the store and does not answer.
+//! when that device asks. A new message is announced to each other attached
+//! device. A device retries HELLO until the ack. A standby does not open the
+//! store and does not answer.
 
 mod create_list;
 mod directory;
 mod hello;
 mod link;
 mod node_api;
+mod notice;
 mod post_history;
 mod runtime;
 mod store;
