@@ -22,5 +22,7 @@ does not open a store. A rank of 0 means no rank and sorts after every
 numbered rank. When two servers still tie, the lower device id holds the
 record.
 
-The conversation store and the pages are later steps. This process chooses a
-role and stays running so the registration stays bound.
+The record role creates or reopens `~/.pnet/discordium/` and keeps every
+conversation in the `record` file there. `DISCORDIUM_DIR` overrides that
+directory. A device or a standby does not open it. The pages are a later
+step. This process stays running so the registration stays bound.
