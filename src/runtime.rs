@@ -1,8 +1,13 @@
-//! Live HELLO loop. The fake socket in tests drives the same hello types.
+//! Live loops for a device and for the record server.
+//!
+//! The device retries HELLO until the record server acks it. The record server
+//! also opens and lists conversations for an approved device. Tests drive those
+//! same types on the fake socket.
 
 use std::net::UdpSocket;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::create_list::{is_create_req, is_list_req, on_create, on_list};
 use crate::directory::{approved_own_discordium, device_of_app, parse_get_data, Directory};
 use crate::hello::{is_hello, DeviceHello, ServerHello, HELLO_BYTES};
 use crate::node_api::{decode_push, NodeClient};
@@ -55,7 +60,7 @@ pub fn run_record(
     push: &UdpSocket,
     token: [u8; 16],
     mut directory: Directory,
-    _store: Store,
+    mut store: Store,
 ) -> Result<(), String> {
     push.set_read_timeout(Some(Duration::from_secs(1)))
         .map_err(|err| format!("push socket: {err}"))?;
@@ -64,22 +69,54 @@ pub fn run_record(
         let Some((sender, payload)) = recv_push(push) else {
             continue;
         };
-        if is_hello(&payload) && !approved_own_discordium(&directory, &sender) {
+        if known_request(&payload) && !approved_own_discordium(&directory, &sender) {
             refresh(client, &token, &mut directory);
         }
         let before = server.attached().len();
-        let Some(ack) = server.on_hello(&directory, sender, &payload) else {
+        if let Some(ack) = server.on_hello(&directory, sender, &payload) {
+            if server.attached().len() > before {
+                println!("Attached {}.", prefix(&sender));
+            }
+            send_to_sender(client, &token, &directory, &sender, &ack, "hello ack");
             continue;
-        };
-        if server.attached().len() > before {
-            println!("Attached {}.", prefix(&sender));
         }
-        let Some(device) = device_of_app(&directory, &sender) else {
-            continue;
+        let reply = if is_create_req(&payload) {
+            on_create(&directory, &mut store, sender, &payload, now_ms())
+        } else if is_list_req(&payload) {
+            on_list(&directory, &store, sender, &payload)
+        } else {
+            None
         };
-        if let Err(err) = client.send(&token, &device, &sender, &ack) {
-            eprintln!("discordium: hello ack: {err}");
+        if let Some(reply) = reply {
+            send_to_sender(client, &token, &directory, &sender, &reply, "send");
         }
+    }
+}
+
+fn known_request(payload: &[u8]) -> bool {
+    is_hello(payload) || is_create_req(payload) || is_list_req(payload)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn send_to_sender(
+    client: &NodeClient,
+    token: &[u8; 16],
+    directory: &Directory,
+    sender: &[u8; 16],
+    payload: &[u8],
+    label: &str,
+) {
+    let Some(device) = device_of_app(directory, sender) else {
+        return;
+    };
+    if let Err(err) = client.send(token, &device, sender, payload) {
+        eprintln!("discordium: {label}: {err}");
     }
 }
 

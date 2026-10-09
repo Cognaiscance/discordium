@@ -1,10 +1,12 @@
 //! Discordium. One binary, started on each machine that takes part.
 //!
 //! The process registers with the local node, remembers the token, and chooses
-//! device, record, or standby from get-data. The record role keeps conversations
-//! and acks HELLO from an approved device. A device retries HELLO until that
-//! ack. A standby does not open the store and does not answer.
+//! device, record, or standby from get-data. The record role keeps conversations,
+//! acks HELLO from an approved device, and opens or lists a conversation when
+//! that device asks. A device retries HELLO until the ack. A standby does not
+//! open the store and does not answer.
 
+mod create_list;
 mod directory;
 mod hello;
 mod link;

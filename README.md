@@ -30,4 +30,10 @@ A device sends `HELLO` to that server until `HELLO_ACK`. The record server
 acks an approved `discordium` on one of this user's own devices. A retry
 does not attach the device twice. Any other sender is ignored. An app that
 is not in get-data yet is not refused; a later hello can still attach. A
-standby does not answer. The pages are a later step.
+standby does not answer.
+
+An approved device opens a conversation with `CREATE_REQ`. The same client
+id returns the conversation already saved. `LIST_RESP` returns those
+conversations. When they do not fit in one datagram, the reply says more
+remain and the next ask continues after the last id. The pages are a later
+step.
