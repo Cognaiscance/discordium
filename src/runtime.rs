@@ -6,20 +6,21 @@
 //! then asks for history. The client draws that in a window. The server
 //! process does not. Tests drive those same types on the fake socket.
 
+use std::collections::VecDeque;
 use std::net::UdpSocket;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::create_list::{is_create_req, is_list_req, on_create, on_list};
+use crate::create_list::{is_create_req, is_list_req, on_list};
 use crate::directory::{
     approved_own_discordium, device_of_app, parse_get_data, record_discordium, Directory,
 };
 use crate::hello::{is_hello, DeviceHello, ServerHello, HELLO_BYTES};
 use crate::node_api::{decode_push, NodeClient};
-use crate::notice::{accept_post, DeviceHistory};
+use crate::notice::{accept_create, accept_post, decode_added, DeviceHistory};
 use crate::page::{is_reply, ConversationList, View};
 use crate::post_history::{is_history_req, is_post, on_history};
-use crate::store::Store;
+use crate::store::{Conversation, Store};
 
 pub fn run_device(
     client: NodeClient,
@@ -48,6 +49,8 @@ pub struct DeviceSession {
     announced: bool,
     last_hello: Option<Instant>,
     notice: Option<View>,
+    added: Option<Vec<Conversation>>,
+    queued_added: VecDeque<([u8; 16], Vec<u8>)>,
 }
 
 impl DeviceSession {
@@ -69,6 +72,8 @@ impl DeviceSession {
             announced: false,
             last_hello: None,
             notice: None,
+            added: None,
+            queued_added: VecDeque::new(),
         }
     }
 
@@ -78,6 +83,10 @@ impl DeviceSession {
 
     pub fn take_notice(&mut self) -> Option<View> {
         self.notice.take()
+    }
+
+    pub fn take_added(&mut self) -> Option<Vec<Conversation>> {
+        self.added.take()
     }
 
     pub fn show_list(&mut self) -> View {
@@ -132,19 +141,29 @@ impl DeviceSession {
         &mut self,
         call: impl FnOnce(&mut ConversationList, &mut dyn FnMut(&[u8]) -> Option<Vec<u8>>) -> View,
     ) -> View {
-        let DeviceSession {
-            client,
-            push,
-            token,
-            directory,
-            hello,
-            history,
-            conversations,
-            ..
-        } = self;
-        let mut ask =
-            |request: &[u8]| ask_record(client, push, token, directory, hello, history, request);
-        call(conversations, &mut ask)
+        let view = {
+            let DeviceSession {
+                client,
+                push,
+                token,
+                directory,
+                hello,
+                history,
+                conversations,
+                queued_added,
+                ..
+            } = self;
+            let mut state = AskState {
+                hello,
+                history,
+                queued_added,
+            };
+            let mut ask =
+                |request: &[u8]| ask_record(client, push, token, directory, &mut state, request);
+            call(conversations, &mut ask)
+        };
+        self.drain_added();
+        view
     }
 
     fn pump_hello(&mut self) {
@@ -193,23 +212,65 @@ impl DeviceSession {
         );
         // A notice that arrives while an ask is waiting stays with DeviceHistory.
         // This read of the push socket must not run inside that wait.
-        let view = {
-            let DeviceSession {
-                client,
-                push,
-                token,
-                directory,
-                hello,
-                history,
-                conversations,
-                ..
-            } = self;
-            conversations.on_notice(sender, &payload, |request| {
-                ask_record(client, push, token, directory, hello, history, request)
-            })
+        // An ADDED that arrives during that wait is queued and read after it.
+        if let Some(view) = self.read_notice(sender, &payload) {
+            self.notice = Some(view);
+        }
+        if let Some(rows) = self.read_added(sender, &payload) {
+            self.added = Some(rows);
+        }
+        self.drain_added();
+    }
+
+    fn read_notice(&mut self, sender: [u8; 16], payload: &[u8]) -> Option<View> {
+        let DeviceSession {
+            client,
+            push,
+            token,
+            directory,
+            hello,
+            history,
+            conversations,
+            queued_added,
+            ..
+        } = self;
+        let mut state = AskState {
+            hello,
+            history,
+            queued_added,
         };
-        if view.is_some() {
-            self.notice = view;
+        conversations.on_notice(sender, payload, |request| {
+            ask_record(client, push, token, directory, &mut state, request)
+        })
+    }
+
+    fn read_added(&mut self, sender: [u8; 16], payload: &[u8]) -> Option<Vec<Conversation>> {
+        let DeviceSession {
+            client,
+            push,
+            token,
+            directory,
+            hello,
+            history,
+            conversations,
+            queued_added,
+            ..
+        } = self;
+        let mut state = AskState {
+            hello,
+            history,
+            queued_added,
+        };
+        conversations.on_added(sender, payload, |request| {
+            ask_record(client, push, token, directory, &mut state, request)
+        })
+    }
+
+    fn drain_added(&mut self) {
+        while let Some((sender, payload)) = self.queued_added.pop_front() {
+            if let Some(rows) = self.read_added(sender, &payload) {
+                self.added = Some(rows);
+            }
         }
     }
 }
@@ -287,9 +348,30 @@ pub fn run_record(
             }
             continue;
         }
-        let reply = if is_create_req(&payload) {
-            on_create(&directory, &mut store, sender, &payload, now_ms())
-        } else if is_list_req(&payload) {
+        if is_create_req(&payload) {
+            if let Some(accepted) = accept_create(
+                &directory,
+                &mut store,
+                server.attached(),
+                sender,
+                &payload,
+                now_ms(),
+            ) {
+                send_to_sender(
+                    client,
+                    &token,
+                    &directory,
+                    &sender,
+                    &accepted.resp,
+                    "create",
+                );
+                for (app, notice) in accepted.notices {
+                    send_to_sender(client, &token, &directory, &app, &notice, "added");
+                }
+            }
+            continue;
+        }
+        let reply = if is_list_req(&payload) {
             on_list(&directory, &store, sender, &payload)
         } else if is_history_req(&payload) {
             on_history(&directory, &store, sender, &payload)
@@ -310,13 +392,19 @@ fn known_request(payload: &[u8]) -> bool {
         || is_history_req(payload)
 }
 
+/// Client state an ask updates while it waits for the record server.
+struct AskState<'a> {
+    hello: &'a mut DeviceHello,
+    history: &'a mut DeviceHistory,
+    queued_added: &'a mut VecDeque<([u8; 16], Vec<u8>)>,
+}
+
 fn ask_record(
     client: &NodeClient,
     push: &UdpSocket,
     token: &[u8; 16],
     directory: &Directory,
-    hello: &mut DeviceHello,
-    history: &mut DeviceHistory,
+    state: &mut AskState<'_>,
     request: &[u8],
 ) -> Option<Vec<u8>> {
     let server = record_discordium(directory)?;
@@ -332,7 +420,10 @@ fn ask_record(
             continue;
         };
         let matched = sender == server.app && is_reply(request, &payload);
-        on_device_push(client, token, hello, history, sender, &payload);
+        on_device_push(client, token, state.hello, state.history, sender, &payload);
+        if sender == server.app && decode_added(&payload).is_some() {
+            state.queued_added.push_back((sender, payload.clone()));
+        }
         if matched {
             return Some(payload);
         }

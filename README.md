@@ -55,11 +55,17 @@ When that save is a new message, the record server sends `NOTICE` to each
 other attached client. That client sends `HISTORY_REQ` and reads the new
 message. A repeated post does not send another notice.
 
+When a client opens a conversation that was not already saved, the record
+server sends `ADDED` to each other attached client. That client sends
+`LIST_REQ` and shows the saved list. The client that opened it does not get
+`ADDED`. Opening the same conversation again does not send another.
+
 The window lists only the conversations `LIST_RESP` returned. Opening one
 waits for `CREATE_RESP`, then that list shows the new row. One conversation
 shows only the messages `HISTORY_RESP` returned. Sending waits for `POST_ACK`,
 then shows the saved text. A `NOTICE` for that conversation sends
-`HISTORY_REQ` and adds the new messages. The window is not a web page.
+`HISTORY_REQ` and adds the new messages. An `ADDED` updates the list and
+leaves the open conversation on screen. The window is not a web page.
 
 ## Three nodes
 

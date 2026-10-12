@@ -1,18 +1,24 @@
-//! Tell other attached devices that a conversation has a new message.
+//! Tell other attached devices that the record changed.
 //!
 //! A new `POST` is announced with `NOTICE`. The device that posted does not
 //! get one, and a repeated post does not send another. Each other attached
-//! device sends `HISTORY_REQ` and reads the new message. An app that is not
-//! attached is not told.
+//! device sends `HISTORY_REQ` and reads the new message.
+//!
+//! A new conversation is announced with `ADDED`. The client that opened it
+//! does not get one, and opening the same conversation again does not send
+//! another. Each other attached device sends `LIST_REQ` and reads the saved
+//! list. An app that is not attached is not told.
 
 use std::collections::{HashMap, VecDeque};
 
+use crate::create_list::{decode_create_req, on_create};
 use crate::directory::{approved_own_discordium, record_discordium, Directory, Peer};
 use crate::hello::VERSION;
 use crate::post_history::{decode_history_resp, decode_post, encode_history_req, on_post};
 use crate::store::{Message, Store};
 
 pub const NOTICE: u8 = 0x0B;
+pub const ADDED: u8 = 0x0C;
 
 pub struct AcceptedPost {
     pub ack: Vec<u8>,
@@ -42,6 +48,34 @@ pub fn accept_post(
     Some(AcceptedPost { ack, notices })
 }
 
+pub struct AcceptedCreate {
+    pub resp: Vec<u8>,
+    pub notices: Vec<([u8; 16], [u8; 18])>,
+}
+
+/// Save a conversation, and name each other attached device that should hear about it.
+///
+/// The response is the conversation already saved when this client id is a retry.
+/// A retry has an empty notice list.
+pub fn accept_create(
+    dir: &Directory,
+    store: &mut Store,
+    attached: &[[u8; 16]],
+    sender: [u8; 16],
+    payload: &[u8],
+    now_ms: u64,
+) -> Option<AcceptedCreate> {
+    let (id, _) = decode_create_req(payload)?;
+    let before = store.list_conversations().len();
+    let resp = on_create(dir, store, sender, payload, now_ms)?;
+    let notices = if store.list_conversations().len() > before {
+        tell(dir, attached, sender, encode_added(id))
+    } else {
+        Vec::new()
+    };
+    Some(AcceptedCreate { resp, notices })
+}
+
 pub fn encode_notice(conversation: [u8; 16]) -> [u8; 18] {
     let mut out = [0u8; 18];
     out[0] = VERSION;
@@ -60,18 +94,44 @@ pub fn decode_notice(payload: &[u8]) -> Option<[u8; 16]> {
     payload.get(2..18)?.try_into().ok()
 }
 
+pub fn encode_added(conversation: [u8; 16]) -> [u8; 18] {
+    let mut out = [0u8; 18];
+    out[0] = VERSION;
+    out[1] = ADDED;
+    out[2..].copy_from_slice(&conversation);
+    out
+}
+
+pub fn decode_added(payload: &[u8]) -> Option<[u8; 16]> {
+    if payload.len() != 18
+        || payload.first().copied() != Some(VERSION)
+        || payload.get(1).copied() != Some(ADDED)
+    {
+        return None;
+    }
+    payload.get(2..18)?.try_into().ok()
+}
+
 fn notice_list(
     dir: &Directory,
     attached: &[[u8; 16]],
     sender: [u8; 16],
     conversation: [u8; 16],
 ) -> Vec<([u8; 16], [u8; 18])> {
-    let notice = encode_notice(conversation);
+    tell(dir, attached, sender, encode_notice(conversation))
+}
+
+fn tell(
+    dir: &Directory,
+    attached: &[[u8; 16]],
+    sender: [u8; 16],
+    body: [u8; 18],
+) -> Vec<([u8; 16], [u8; 18])> {
     attached
         .iter()
         .copied()
         .filter(|app| *app != sender && approved_own_discordium(dir, app))
-        .map(|app| (app, notice))
+        .map(|app| (app, body))
         .collect()
 }
 
@@ -201,6 +261,7 @@ impl DeviceHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::create_list::encode_create_req;
     use crate::directory::{
         AppRecord, ContactRecord, DeviceRecord, Directory, Grade, CLIENT_ALIAS, SERVER_ALIAS,
     };
@@ -544,5 +605,38 @@ mod tests {
         let (sender, payload) = link.take(phone_app).unwrap();
         assert!(phone.on_history(sender, &payload).is_none());
         assert_eq!(phone.messages().len(), 3);
+    }
+
+    #[test]
+    fn a_new_conversation_is_told_to_the_other_attached_client() {
+        let (dir, laptop_app, phone_app, home_app) = room();
+        let tmp = Temp::new("added");
+        let mut store = Store::open(tmp.path()).unwrap();
+        let mut link = FakeSocket::new();
+        let mut server = ServerHello::new();
+        attach(&mut link, &mut server, &dir, laptop_app, home_app);
+        attach(&mut link, &mut server, &dir, phone_app, home_app);
+
+        let id = ident(0x71);
+        let req = encode_create_req(id, "general").unwrap();
+        let mut attached = server.attached().to_vec();
+        attached.push(ident(0x99));
+        let accepted = accept_create(&dir, &mut store, &attached, laptop_app, &req, 50).unwrap();
+        assert_eq!(
+            accepted
+                .notices
+                .iter()
+                .map(|(app, _)| *app)
+                .collect::<Vec<_>>(),
+            vec![phone_app]
+        );
+        assert_eq!(decode_added(&accepted.notices[0].1), Some(id));
+
+        let again = accept_create(&dir, &mut store, &attached, laptop_app, &req, 90).unwrap();
+        assert!(again.notices.is_empty());
+        assert!(decode_added(&[VERSION, ADDED]).is_none());
+        let mut bad = encode_added(id).to_vec();
+        bad.push(0);
+        assert!(decode_added(&bad).is_none());
     }
 }

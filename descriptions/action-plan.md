@@ -100,7 +100,7 @@ The client opens a desktop window where that process was started. The server
 process does not open one. The window is not a web browser.
 
 - A control that opens a conversation. The new row appears after the server answers.
-- The list of conversations, fetched from the server.
+- The list of conversations, fetched from the server. A new conversation tells the other attached clients, and their lists show the saved row.
 - One conversation, with its messages fetched from the server.
 - A box that sends a message and then shows what the server saved.
 
@@ -235,7 +235,9 @@ server process does not draw it, and it does not listen on `8788`.
 The list shows only what `LIST_RESP` returned. Opening a conversation waits
 for `CREATE_RESP`. A thread shows only what `HISTORY_RESP` returned. Sending
 waits for `POST_ACK`, then shows the saved text. A `NOTICE` for the open
-conversation sends `HISTORY_REQ` and adds the new messages.
+conversation sends `HISTORY_REQ` and adds the new messages. A new
+conversation sends `ADDED` to each other attached client. That client asks
+for the list and does not leave the conversation it already has open.
 
 Finished when a client run shows that interface without a browser, and a
 server run does not open an interface.
