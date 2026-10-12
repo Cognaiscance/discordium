@@ -1,8 +1,8 @@
 //! Start one Discordium process against the local node.
 //!
-//! The client registers as `discordium-client`, keeps its own token, and serves
-//! the pages. The server registers as `discordium-server`, keeps a different
-//! token, and either holds the record or stands by. It does not serve pages.
+//! The client registers as `discordium-client`, keeps its own token, and opens
+//! the window. The server registers as `discordium-server`, keeps a different
+//! token, and either holds the record or stands by. It does not open a window.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -12,7 +12,6 @@ use crate::node_api::{
     default_push_port, load_token, record_dir, save_token, token_path, NodeClient,
     DEFAULT_PNET_ADDR,
 };
-use crate::page::DEFAULT_HTTP_PORT;
 use crate::runtime;
 use crate::store::Store;
 
@@ -94,10 +93,7 @@ fn run(kind: ProcessKind) -> Result<(), String> {
             std::thread::park();
             Ok(())
         }
-        (ProcessKind::Client, Role::Device) => {
-            let http_port = http_port()?;
-            runtime::run_device(&client, &push, token, dir, http_port)
-        }
+        (ProcessKind::Client, Role::Device) => runtime::run_device(client, push, token, dir),
         (ProcessKind::Client, Role::Record | Role::Standby) => {
             Err("the client does not keep the record".to_string())
         }
@@ -116,17 +112,6 @@ fn pnet_addr() -> Result<SocketAddr, String> {
         return Err("PNET_ADDR must be IPv4".to_string());
     }
     Ok(addr)
-}
-
-fn http_port() -> Result<u16, String> {
-    let text = env_or("DISCORDIUM_HTTP_PORT", &DEFAULT_HTTP_PORT.to_string());
-    let port: u16 = text
-        .parse()
-        .map_err(|_| format!("DISCORDIUM_HTTP_PORT '{text}' is not a port"))?;
-    if port == 0 {
-        return Err("DISCORDIUM_HTTP_PORT must not be 0".to_string());
-    }
-    Ok(port)
 }
 
 fn push_port(kind: ProcessKind) -> Result<u16, String> {

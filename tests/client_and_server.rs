@@ -1,7 +1,7 @@
-//! One node, two processes: the client serves pages and the server answers.
+//! One node, two processes: the client asks and the server answers.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -60,6 +60,8 @@ fn client_and_server_share_one_node() {
     let server_push = free_udp();
     let client_http = free_tcp();
     let server_http = free_tcp();
+    let drive = root.path().join("drive");
+    std::fs::write(&drive, "open same-machine\nlist\n").unwrap();
 
     let mut server = spawn(
         &bin_path("discordium-server"),
@@ -93,12 +95,10 @@ fn client_and_server_share_one_node() {
             ),
             ("DISCORDIUM_PUSH_PORT", &client_push.to_string()),
             ("DISCORDIUM_HTTP_PORT", &client_http.to_string()),
+            ("DISCORDIUM_DRIVE", drive.to_str().unwrap()),
         ],
     );
-    wait_log(
-        &mut client,
-        &format!("Page at http://127.0.0.1:{client_http}/"),
-    );
+    wait_log(&mut client, "conversation same-machine");
 
     let seen = node.seen.lock().unwrap().clone();
     let aliases: Vec<_> = seen.iter().map(|row| row.alias.as_str()).collect();
@@ -106,23 +106,18 @@ fn client_and_server_share_one_node() {
     assert!(aliases.contains(&SERVER_ALIAS), "{seen:?}");
     assert!(seen.iter().all(|row| row.protocol == PROTOCOL));
 
-    let (status, body) = exchange(client_http, "GET", "/", "");
-    assert_eq!(status, 200, "{body}");
-    assert!(!body.contains("The server did not answer."));
-    assert!(!body.contains("The server is not visible yet."));
+    let log = client.log.lock().unwrap().clone();
+    assert!(!log.contains("Window open."), "{log}");
+    assert!(!log.contains("The server did not answer."), "{log}");
+    assert!(!log.contains("The server is not visible yet."), "{log}");
 
-    let (status, body) = exchange(client_http, "POST", "/", "title=same-machine");
-    assert_eq!(status, 303, "{body}");
-
-    let (status, body) = exchange(client_http, "GET", "/", "");
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body.matches("same-machine").count(), 1, "{body}");
-
-    let refused = TcpStream::connect_timeout(
-        &SocketAddr::from(([127, 0, 0, 1], server_http)),
-        Duration::from_millis(200),
-    );
-    assert!(refused.is_err(), "the server listened on {server_http}");
+    for port in [client_http, server_http] {
+        let refused = TcpStream::connect_timeout(
+            &SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_millis(200),
+        );
+        assert!(refused.is_err(), "a process listened on {port}");
+    }
     assert!(!root.path().join("client-record").join("record").exists());
     assert!(root.path().join("server-record").join("record").exists());
     assert_eq!(
@@ -345,6 +340,7 @@ fn spawn(bin: &str, env: &[(&str, &str)]) -> Proc {
         .env_remove("DISCORDIUM_DIR")
         .env_remove("DISCORDIUM_PUSH_PORT")
         .env_remove("DISCORDIUM_HTTP_PORT")
+        .env_remove("DISCORDIUM_DRIVE")
         .env_remove("PNET_ADDR")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -406,41 +402,6 @@ fn wait_log(proc: &mut Proc, needle: &str) {
         "timed out waiting for {needle}: {}",
         proc.log.lock().unwrap()
     );
-}
-
-fn exchange(port: u16, method: &str, path: &str, body: &str) -> (u16, String) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(8)))
-        .unwrap();
-    let head = if body.is_empty() {
-        format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-    } else {
-        format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-    };
-    stream.write_all(head.as_bytes()).unwrap();
-    let mut buf = Vec::new();
-    loop {
-        let mut tmp = [0u8; 2048];
-        match stream.read(&mut tmp) {
-            Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(err) if idle(&err) => break,
-            Err(err) => panic!("{err}"),
-        }
-    }
-    let text = String::from_utf8(buf).unwrap();
-    let status = text
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0);
-    let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-    (status, body)
 }
 
 fn free_udp() -> u16 {

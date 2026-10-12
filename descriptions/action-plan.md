@@ -22,8 +22,8 @@ device, comes back by asking the server again. A server does not serve the
 chat interface. Its job is to save and to answer.
 
 A device-grade node does not serve the owner portal, so the interface cannot
-be a portal page. Discordium serves its own pages on the device. The server
-process speaks the app protocol only.
+be a portal page. The client opens a desktop window. The server process
+speaks the app protocol only and does not open a window.
 
 The first version is this user's own devices and this user's server. A
 device talks only to that user's Discordium. Other pNet users are a later
@@ -89,14 +89,15 @@ retry land once.
 
 ## Interface
 
-Loopback HTTP on the device, default `127.0.0.1:8788`.
+The client opens a desktop window where that process was started. The server
+process does not open one.
 
 - A control that opens a conversation. The new row appears after the server answers.
 - The list of conversations, fetched from the server.
 - One conversation, with its messages fetched from the server.
 - A box that sends a message and then shows what the server saved.
 
-Relative links, so the pages work on that port alone. No second password.
+No second password. The window is not a web page.
 
 ## Work, in order
 
