@@ -5,6 +5,7 @@
 //! `application/discordium`.
 
 mod create_list;
+mod desktop;
 mod directory;
 mod hello;
 mod link;

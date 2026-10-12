@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Conversations over pNet. The client and the server register as different apps."
 
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+
 [lib]
 name = "discordium"
 path = "src/lib.rs"

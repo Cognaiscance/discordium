@@ -3,11 +3,11 @@
 //! The client retries HELLO until the record server acks it. The record server
 //! also opens and lists conversations, and saves messages, for an approved
 //! client. A new message is announced to each other attached client, which
-//! then asks for history. A client also serves the conversation list and one
-//! thread. The server process does not. Tests drive those same types on the
-//! fake socket.
+//! then asks for history. The client draws that in a window. The server
+//! process does not. Tests drive those same types on the fake socket.
 
-use std::net::{TcpListener, UdpSocket};
+use std::net::UdpSocket;
+use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::create_list::{is_create_req, is_list_req, on_create, on_list};
@@ -17,81 +17,226 @@ use crate::directory::{
 use crate::hello::{is_hello, DeviceHello, ServerHello, HELLO_BYTES};
 use crate::node_api::{decode_push, NodeClient};
 use crate::notice::{accept_post, DeviceHistory};
-use crate::page::{is_reply, poll_page, ConversationList};
+use crate::page::{is_reply, ConversationList, View};
 use crate::post_history::{is_history_req, is_post, on_history};
 use crate::store::Store;
 
 pub fn run_device(
-    client: &NodeClient,
-    push: &UdpSocket,
+    client: NodeClient,
+    push: UdpSocket,
     token: [u8; 16],
-    mut directory: Directory,
-    http_port: u16,
+    directory: Directory,
 ) -> Result<(), String> {
-    push.set_read_timeout(Some(Duration::from_secs(1)))
-        .map_err(|err| format!("push socket: {err}"))?;
-    let page_socket = TcpListener::bind(("127.0.0.1", http_port))
-        .map_err(|err| format!("bind 127.0.0.1:{http_port}: {err}"))?;
-    page_socket
-        .set_nonblocking(true)
-        .map_err(|err| format!("page socket: {err}"))?;
-    println!("Page at http://127.0.0.1:{http_port}/");
+    let mut session = DeviceSession::new(client, push, token, directory);
+    if let Some(path) = drive_path() {
+        return session.run_drive(Path::new(&path));
+    }
+    println!("Window open.");
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    let mut hello = DeviceHello::new();
-    let mut history = DeviceHistory::new();
-    let mut conversations = ConversationList::new();
-    hello.note_directory(&directory);
-    history.note_directory(&directory);
-    conversations.note_directory(&directory);
-    let mut announced = false;
-    loop {
-        if !hello.is_acked() {
-            if hello.hello_to_send().is_none() {
-                refresh(client, &token, &mut directory);
-                hello.note_directory(&directory);
-                history.note_directory(&directory);
-                conversations.note_directory(&directory);
-            }
-            if let Some(server) = hello.hello_to_send() {
-                match client.send(&token, &server.device, &server.app, &HELLO_BYTES) {
-                    Ok(()) => {
-                        if !announced {
-                            println!("Hello sent.");
-                            announced = true;
-                        }
-                    }
-                    Err(err) => eprintln!("discordium: hello: {err}"),
-                }
-            }
-        }
-        poll_page(&page_socket, &mut conversations, |request| {
-            ask_record(
-                client,
-                push,
-                &token,
-                &directory,
-                &mut hello,
-                &mut history,
-                request,
-            )
-        });
-        if let Some((sender, payload)) = recv_push(push) {
-            on_device_push(client, &token, &mut hello, &mut history, sender, &payload);
-            // A notice that arrives while a page request is waiting stays with
-            // DeviceHistory. This read of the push socket must not run inside that wait.
-            conversations.on_notice(sender, &payload, |request| {
-                ask_record(
-                    client,
-                    push,
-                    &token,
-                    &directory,
-                    &mut hello,
-                    &mut history,
-                    request,
-                )
-            });
+    crate::desktop::run(session)
+}
+
+/// The client session the window drives. A drive file uses the same asks.
+pub struct DeviceSession {
+    client: NodeClient,
+    push: UdpSocket,
+    token: [u8; 16],
+    directory: Directory,
+    hello: DeviceHello,
+    history: DeviceHistory,
+    conversations: ConversationList,
+    announced: bool,
+    last_hello: Option<Instant>,
+    notice: Option<View>,
+}
+
+impl DeviceSession {
+    fn new(client: NodeClient, push: UdpSocket, token: [u8; 16], directory: Directory) -> Self {
+        let mut hello = DeviceHello::new();
+        let mut history = DeviceHistory::new();
+        let mut conversations = ConversationList::new();
+        hello.note_directory(&directory);
+        history.note_directory(&directory);
+        conversations.note_directory(&directory);
+        Self {
+            client,
+            push,
+            token,
+            directory,
+            hello,
+            history,
+            conversations,
+            announced: false,
+            last_hello: None,
+            notice: None,
         }
     }
+
+    pub fn hello_acked(&self) -> bool {
+        self.hello.is_acked()
+    }
+
+    pub fn take_notice(&mut self) -> Option<View> {
+        self.notice.take()
+    }
+
+    pub fn show_list(&mut self) -> View {
+        self.with_ask(|conversations, ask| conversations.show_list(ask))
+    }
+
+    pub fn open_title(&mut self, title: &str) -> View {
+        self.with_ask(|conversations, ask| conversations.open(title, ask))
+    }
+
+    pub fn open_thread(&mut self, id: [u8; 16]) -> View {
+        self.with_ask(|conversations, ask| conversations.open_thread(id, ask))
+    }
+
+    pub fn send_text(&mut self, id: [u8; 16], text: &str) -> View {
+        self.with_ask(|conversations, ask| conversations.send(id, text, ask))
+    }
+
+    pub fn pump(&mut self) {
+        self.pump_hello();
+        let _ = self.push.set_read_timeout(Some(Duration::from_millis(1)));
+        while let Some((sender, payload)) = recv_push(&self.push) {
+            self.on_push(sender, payload);
+        }
+    }
+
+    fn run_drive(&mut self, path: &Path) -> Result<(), String> {
+        let script =
+            std::fs::read_to_string(path).map_err(|err| format!("read drive file: {err}"))?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !self.hello.is_acked() && Instant::now() < deadline {
+            self.pump();
+        }
+        for line in script.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let view = if let Some(title) = line.strip_prefix("open ") {
+                self.open_title(title)
+            } else if line == "list" {
+                self.show_list()
+            } else {
+                return Err(format!("unknown drive command: {line}"));
+            };
+            print_view(&view);
+        }
+        Ok(())
+    }
+
+    fn with_ask(
+        &mut self,
+        call: impl FnOnce(&mut ConversationList, &mut dyn FnMut(&[u8]) -> Option<Vec<u8>>) -> View,
+    ) -> View {
+        let DeviceSession {
+            client,
+            push,
+            token,
+            directory,
+            hello,
+            history,
+            conversations,
+            ..
+        } = self;
+        let mut ask =
+            |request: &[u8]| ask_record(client, push, token, directory, hello, history, request);
+        call(conversations, &mut ask)
+    }
+
+    fn pump_hello(&mut self) {
+        if self.hello.is_acked() {
+            return;
+        }
+        let due = self
+            .last_hello
+            .map(|sent| sent.elapsed() >= Duration::from_secs(1))
+            .unwrap_or(true);
+        if !due {
+            return;
+        }
+        if self.hello.hello_to_send().is_none() {
+            refresh(&self.client, &self.token, &mut self.directory);
+            self.hello.note_directory(&self.directory);
+            self.history.note_directory(&self.directory);
+            self.conversations.note_directory(&self.directory);
+        }
+        let Some(server) = self.hello.hello_to_send() else {
+            return;
+        };
+        self.last_hello = Some(Instant::now());
+        match self
+            .client
+            .send(&self.token, &server.device, &server.app, &HELLO_BYTES)
+        {
+            Ok(()) => {
+                if !self.announced {
+                    println!("Hello sent.");
+                    self.announced = true;
+                }
+            }
+            Err(err) => eprintln!("discordium: hello: {err}"),
+        }
+    }
+
+    fn on_push(&mut self, sender: [u8; 16], payload: Vec<u8>) {
+        on_device_push(
+            &self.client,
+            &self.token,
+            &mut self.hello,
+            &mut self.history,
+            sender,
+            &payload,
+        );
+        // A notice that arrives while an ask is waiting stays with DeviceHistory.
+        // This read of the push socket must not run inside that wait.
+        let view = {
+            let DeviceSession {
+                client,
+                push,
+                token,
+                directory,
+                hello,
+                history,
+                conversations,
+                ..
+            } = self;
+            conversations.on_notice(sender, &payload, |request| {
+                ask_record(client, push, token, directory, hello, history, request)
+            })
+        };
+        if view.is_some() {
+            self.notice = view;
+        }
+    }
+}
+
+fn drive_path() -> Option<String> {
+    let path = std::env::var("DISCORDIUM_DRIVE").ok()?;
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
+}
+
+fn print_view(view: &View) {
+    if let Some(note) = view.note {
+        println!("note {note}");
+    }
+    if view.thread.is_none() {
+        for row in &view.conversations {
+            println!("conversation {}", row.title);
+        }
+    } else {
+        for message in &view.messages {
+            println!("message {}", message.text);
+        }
+    }
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
 pub fn run_record(
@@ -178,6 +323,9 @@ fn ask_record(
     client
         .send(token, &server.device, &server.app, request)
         .ok()?;
+    // The window drains the socket on a short timeout. A reply wait must not
+    // spin on that same timeout.
+    let _ = push.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         let Some((sender, payload)) = recv_push(push) else {

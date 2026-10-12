@@ -24,8 +24,9 @@ chat interface. Its job is to save and to answer.
 
 A device-grade node does not serve the owner portal, so the interface is
 Discordium's own. It is not a browser page and not a portal page. The
-client opens it. The server process speaks the app protocol only and does
-not open it, including when both processes are on that device.
+client opens a desktop window. The server process speaks the app protocol
+only and does not open a window, including when both processes are on that
+device.
 
 The first version is this user's own devices and this user's server. A
 device talks only to that user's Discordium. Other pNet users are a later
@@ -95,22 +96,15 @@ retry land once.
 
 ## Interface
 
-The device shows the interface. The server process does not open one.
-
-The interface a person keeps is not a web browser. The device process draws
-it on the terminal where that process was started. Record and standby do
-not draw it.
-
-Until that interface exists, a device serves loopback pages at
-`127.0.0.1:8788` so the record can be seen:
+The client opens a desktop window where that process was started. The server
+process does not open one. The window is not a web browser.
 
 - A control that opens a conversation. The new row appears after the server answers.
 - The list of conversations, fetched from the server.
 - One conversation, with its messages fetched from the server.
 - A box that sends a message and then shows what the server saved.
 
-Relative links, so the pages work on that port alone. No second password.
-Step 11 replaces these pages. The server process does not listen for them.
+No second password. The window is not a web page.
 
 ## Work, in order
 
@@ -234,7 +228,7 @@ Finished when these have been done on a running server and two clients:
 
 ### 11. Device interface
 
-Replace the loopback pages with the terminal interface. The client process
+Replace the loopback pages with a desktop window. The client process
 draws it where it was started. A person does not open a web browser. The
 server process does not draw it, and it does not listen on `8788`.
 
@@ -251,5 +245,5 @@ server run does not open an interface.
 Step 10 has been run, so a person can use the pages on a client, leave, come
 back, and see the same conversations on another of their clients. The client
 and the server can also be two processes on one machine. Step 11 replaces
-those pages with the terminal interface. The check that a stranger changes
+those pages with the desktop window. The check that a stranger changes
 nothing is step 3. pNet core is untouched.
