@@ -248,4 +248,5 @@ Step 10 has been run, so a person can use the pages on a client, leave, come
 back, and see the same conversations on another of their clients. The client
 and the server can also be two processes on one machine. Step 11 replaces
 those pages with the desktop window. The check that a stranger changes
-nothing is step 3. pNet core is untouched.
+nothing is step 3. pNet core is untouched. The next plan is
+`descriptions/interface-voice-plan.md`.
