@@ -99,10 +99,10 @@ retry land once.
 The client opens a desktop window where that process was started. The server
 process does not open one. The window is not a web browser.
 
-- A control that opens a conversation. The new row appears after the server answers.
+- A control that opens a conversation. Enter in the title box does the same. The new row appears after the server answers.
 - The list of conversations, fetched from the server. A new conversation tells the other attached clients, and their lists show the saved row.
 - One conversation, with its messages fetched from the server.
-- A box that sends a message and then shows what the server saved.
+- A box that sends a message. Enter in that box does the same, then shows what the server saved.
 
 No second password. The window is not a web page.
 
