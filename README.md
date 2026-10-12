@@ -60,3 +60,32 @@ waits for `CREATE_RESP`, then that list shows the new row. One conversation
 shows only the messages `HISTORY_RESP` returned. Sending waits for `POST_ACK`,
 then shows the saved text. A `NOTICE` for that conversation sends
 `HISTORY_REQ` and adds the new messages. The window is not a web page.
+
+## Three nodes
+
+`PNET_AUTO_APPROVE_APPS` stays unset. Each node approves its own app by hand,
+under Pending Apps.
+
+n64 holds the record:
+
+```
+~/.pnet/bin/discordium-server
+```
+
+It prints `record` and does not open a window.
+
+sanosuke and tealface are the clients. tealface's node runs as root, so that
+binary is `/root/.pnet/bin/discordium-client`. sanosuke uses:
+
+```
+~/.pnet/bin/discordium-client
+```
+
+Each client prints `client` and then `Window open.` It prints `Hello acked.`
+after `discordium-server` and that client are both approved. On tealface,
+start that client with `DISPLAY=:0` and
+`XAUTHORITY=/var/run/lightdm/root/:0`.
+
+Open a conversation on one client and send a message. Stop that client and
+start it again. The conversation is still listed, because the server kept
+the record. The other client shows the same message.
