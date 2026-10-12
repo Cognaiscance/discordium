@@ -65,7 +65,9 @@ waits for `CREATE_RESP`, then that list shows the new row. One conversation
 shows only the messages `HISTORY_RESP` returned. Sending waits for `POST_ACK`,
 then shows the saved text. A `NOTICE` for that conversation sends
 `HISTORY_REQ` and adds the new messages. An `ADDED` updates the list and
-leaves the open conversation on screen. The window is not a web page.
+leaves the open conversation on screen. Enter in the title box opens a
+conversation, the same as Open. Enter in the message box sends it, the same
+as Send. The window is not a web page.
 
 ## Three nodes
 

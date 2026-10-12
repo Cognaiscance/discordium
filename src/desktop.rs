@@ -1,6 +1,8 @@
 //! The client window. The server process does not open one.
 //!
 //! The list and the thread show only what the record server returned.
+//! Enter in the title box opens a conversation. Enter in the message box
+//! sends that message.
 
 use std::time::{Duration, Instant};
 
@@ -146,8 +148,9 @@ impl eframe::App for Desktop {
                 });
                 ui.separator();
                 ui.label("Title");
-                ui.text_edit_singleline(&mut self.title);
-                if ui.button("Open").clicked() {
+                if enter_submits(ui, egui::Id::new("conversation-title"), &mut self.title)
+                    || ui.button("Open").clicked()
+                {
                     self.action = Some(Action::Open);
                 }
             });
@@ -169,9 +172,9 @@ impl eframe::App for Desktop {
                 }
                 ui.separator();
                 ui.label("Message");
-                let enter = ui.text_edit_singleline(&mut self.draft).lost_focus()
-                    && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                if ui.button("Send").clicked() || enter {
+                if enter_submits(ui, egui::Id::new("message-draft"), &mut self.draft)
+                    || ui.button("Send").clicked()
+                {
                     self.action = Some(Action::Send(id));
                 }
             }
@@ -181,5 +184,129 @@ impl eframe::App for Desktop {
             self.apply(action);
         }
         ctx.request_repaint_after(Duration::from_millis(200));
+    }
+}
+
+/// Enter while this box is focused.
+///
+/// The text from before the edit is kept when that key leaves the box empty.
+/// The key is left in place when the box is not focused, so the other box can
+/// use it.
+fn enter_submits(ui: &mut egui::Ui, id: egui::Id, text: &mut String) -> bool {
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    let typed = text.clone();
+    let submit = focused && take_enter(ui);
+    let _response = ui.add(egui::TextEdit::singleline(text).id(id));
+    if let Some(kept) = text_after_submit(&typed, text, submit) {
+        *text = kept;
+    }
+    submit
+}
+
+fn take_enter(ui: &mut egui::Ui) -> bool {
+    let mut pressed = false;
+    ui.input_mut(|input| {
+        input.events.retain(|event| match event {
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                repeat: false,
+                ..
+            } => {
+                pressed = true;
+                false
+            }
+            _ => true,
+        });
+    });
+    pressed
+}
+
+/// The text a submit should use. None when this key does not submit.
+fn text_after_submit(typed: &str, edited: &str, submit: bool) -> Option<String> {
+    if !submit {
+        None
+    } else if edited.is_empty() {
+        Some(typed.to_string())
+    } else {
+        Some(edited.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn submit_keeps_text_that_the_edit_cleared() {
+        assert_eq!(
+            text_after_submit("general", "", true).as_deref(),
+            Some("general")
+        );
+        assert_eq!(
+            text_after_submit("hello", "hello", true).as_deref(),
+            Some("hello")
+        );
+        assert_eq!(text_after_submit("", "", true).as_deref(), Some(""));
+        assert_eq!(text_after_submit("general", "", false), None);
+    }
+
+    #[test]
+    fn enter_submits_the_focused_box_only() {
+        let ctx = egui::Context::default();
+        let title_id = egui::Id::new("conversation-title");
+        let message_id = egui::Id::new("message-draft");
+        let mut title = String::from("general");
+        let mut draft = String::from("hello");
+
+        run_boxes(&ctx, &mut title, &mut draft, vec![]);
+        ctx.memory_mut(|memory| memory.request_focus(message_id));
+
+        let (title_sent, message_sent) = run_boxes(&ctx, &mut title, &mut draft, vec![enter_key()]);
+        assert!(!title_sent);
+        assert!(message_sent);
+        assert_eq!(title, "general");
+        assert_eq!(draft, "hello");
+        assert!(ctx.memory(|memory| memory.has_focus(message_id)));
+        assert!(!ctx.memory(|memory| memory.has_focus(title_id)));
+    }
+
+    fn run_boxes(
+        ctx: &egui::Context,
+        title: &mut String,
+        draft: &mut String,
+        events: Vec<egui::Event>,
+    ) -> (bool, bool) {
+        let mut title_sent = false;
+        let mut message_sent = false;
+        let _ = ctx.run(input(events), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                title_sent |= enter_submits(ui, egui::Id::new("conversation-title"), title);
+                message_sent |= enter_submits(ui, egui::Id::new("message-draft"), draft);
+            });
+        });
+        (title_sent, message_sent)
+    }
+
+    fn input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 300.0),
+            )),
+            focused: true,
+            events,
+            ..Default::default()
+        }
+    }
+
+    fn enter_key() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
     }
 }
