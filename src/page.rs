@@ -6,7 +6,8 @@
 //!
 //! A thread shows only the messages `HISTORY_RESP` returned. Sending waits
 //! for `POST_ACK` and shows the saved text. A `NOTICE` for that conversation
-//! sends `HISTORY_REQ` and adds the new messages.
+//! sends `HISTORY_REQ` and adds the new messages. An `ADDED` sends `LIST_REQ`
+//! and the list shows those saved rows. The open conversation stays open.
 
 use std::collections::HashMap;
 
@@ -15,7 +16,7 @@ use crate::create_list::{
     is_create_req, is_list_req,
 };
 use crate::directory::{record_discordium, Directory};
-use crate::notice::decode_notice;
+use crate::notice::{decode_added, decode_notice};
 use crate::post_history::{
     decode_history_req, decode_history_resp, decode_post, decode_post_ack, encode_history_req,
     encode_post, is_history_req, is_post,
@@ -157,6 +158,27 @@ impl ConversationList {
         Some(self.thread_view(conversation, note))
     }
 
+    /// The saved list after this added notice.
+    ///
+    /// None when `sender` is not the record server, the payload is not `ADDED`,
+    /// or the list ask fails. The open thread is left as it was.
+    pub fn on_added(
+        &mut self,
+        sender: [u8; 16],
+        payload: &[u8],
+        mut ask: impl FnMut(&[u8]) -> Option<Vec<u8>>,
+    ) -> Option<Vec<Conversation>> {
+        if self.server != Some(sender) {
+            return None;
+        }
+        decode_added(payload)?;
+        let (rows, note) = self.fetch(&mut ask);
+        if note.is_some() {
+            return None;
+        }
+        Some(rows)
+    }
+
     fn fetch(
         &self,
         ask: &mut impl FnMut(&[u8]) -> Option<Vec<u8>>,
@@ -290,11 +312,11 @@ pub fn is_reply(request: &[u8], response: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::create_list::{on_create, on_list, CREATE_REQ, LIST_REQ};
+    use crate::create_list::{encode_create_req, on_create, on_list, CREATE_REQ, LIST_REQ};
     use crate::directory::{AppRecord, DeviceRecord, Directory, Grade, CLIENT_ALIAS, SERVER_ALIAS};
-    use crate::hello::{ServerHello, HELLO_BYTES};
+    use crate::hello::{ServerHello, HELLO_BYTES, VERSION};
     use crate::link::FakeSocket;
-    use crate::notice::accept_post;
+    use crate::notice::{accept_create, accept_post, encode_added, ADDED};
     use crate::post_history::{
         decode_history_req, decode_post, encode_post, on_history, on_post, HISTORY_REQ, POST,
         POST_ACK,
@@ -578,6 +600,92 @@ mod tests {
         assert_eq!(updated.messages[0].text, "hello");
         assert_eq!(updated.messages[1].text, "from-phone");
         assert_eq!(seen, vec![HISTORY_REQ, POST, HISTORY_REQ, HISTORY_REQ]);
+    }
+
+    #[test]
+    fn added_shows_the_list_the_server_saved() {
+        let (dir, laptop_app, phone_app, home_app) = house();
+        let tmp = Temp::new("added");
+        let mut store = Store::open(tmp.path()).unwrap();
+        let mut link = FakeSocket::new();
+        let mut server = ServerHello::new();
+        attach(&mut link, &mut server, &dir, laptop_app, home_app);
+        attach(&mut link, &mut server, &dir, phone_app, home_app);
+
+        let req = encode_create_req(ident(0x71), "a<b c").unwrap();
+        let accepted =
+            accept_create(&dir, &mut store, server.attached(), laptop_app, &req, 1_700).unwrap();
+        assert_eq!(accepted.notices.len(), 1);
+        assert_eq!(accepted.notices[0].0, phone_app);
+        let again =
+            accept_create(&dir, &mut store, server.attached(), laptop_app, &req, 1_800).unwrap();
+        assert!(again.notices.is_empty());
+
+        let id = ident(0x71);
+        let mut page = ConversationList::new();
+        page.note_directory(&dir);
+        let mut seen = Vec::new();
+        let opened = page.open_thread(id, |payload| {
+            answer(&dir, &mut store, phone_app, home_app, payload, &mut seen)
+        });
+        assert_eq!(opened.thread, Some(id));
+        seen.clear();
+
+        let mut asked = false;
+        assert!(page
+            .on_added(ident(0x99), &accepted.notices[0].1, |_| {
+                asked = true;
+                None
+            })
+            .is_none());
+        assert!(!asked);
+        assert!(page
+            .on_added(home_app, &[VERSION, ADDED], |_| {
+                asked = true;
+                None
+            })
+            .is_none());
+        assert!(!asked);
+
+        let rows = page
+            .on_added(home_app, &encode_added(ident(0x99)), |payload| {
+                answer(&dir, &mut store, phone_app, home_app, payload, &mut seen)
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, id);
+        assert_eq!(rows[0].title, "a<b c");
+        assert!(rows.iter().all(|row| row.id != ident(0x99)));
+        assert_eq!(seen, vec![LIST_REQ]);
+
+        assert!(page
+            .on_added(home_app, &accepted.notices[0].1, |_| None)
+            .is_none());
+    }
+
+    #[test]
+    fn added_follows_every_list_response() {
+        let (dir, laptop_app, home_app) = room();
+        let tmp = Temp::new("added-pages");
+        let mut store = Store::open(tmp.path()).unwrap();
+        for n in 0..5u8 {
+            let prefix = format!("row{n}-");
+            let title = format!("{prefix}{}", "x".repeat(200 - prefix.len()));
+            store
+                .create_conversation(ident(0x30 + n), &title, u64::from(n))
+                .unwrap();
+        }
+        let mut page = ConversationList::new();
+        page.note_directory(&dir);
+        let mut seen = Vec::new();
+        let rows = page
+            .on_added(home_app, &encode_added(ident(0x34)), |payload| {
+                answer(&dir, &mut store, laptop_app, home_app, payload, &mut seen)
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+        assert!(seen.iter().all(|kind| *kind == LIST_REQ));
+        assert!(seen.len() > 1);
     }
 
     #[test]

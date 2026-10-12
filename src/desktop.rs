@@ -111,6 +111,12 @@ impl eframe::App for Desktop {
                 self.view.note = view.note;
             }
         }
+        if let Some(rows) = self.session.take_added() {
+            self.list.clone_from(&rows);
+            if self.view.thread.is_none() {
+                self.view.conversations = rows;
+            }
+        }
         if self.session.hello_acked() && !self.loaded {
             self.view = self.session.show_list();
             self.remember_list();
