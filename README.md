@@ -64,3 +64,31 @@ The thread page shows one conversation. It renders only the messages
 `HISTORY_RESP` returned. Sending waits for `POST_ACK`, then draws the saved
 text. A `NOTICE` for that conversation sends `HISTORY_REQ` and adds the new
 messages.
+
+## Three nodes
+
+`PNET_AUTO_APPROVE_APPS` stays unset. Each node approves its own app by hand,
+under Pending Apps.
+
+n64 holds the record:
+
+```
+~/.pnet/bin/discordium-server
+```
+
+It prints `record` and does not listen on `8788`.
+
+sanosuke and tealface are the clients. tealface's node runs as root, so that
+binary is `/root/.pnet/bin/discordium-client`. sanosuke uses:
+
+```
+~/.pnet/bin/discordium-client
+```
+
+Each client prints `client` and serves `http://127.0.0.1:8788/` on that
+machine. It prints `Hello acked` after `discordium-server` and that client
+are both approved.
+
+Open a conversation on one client and send a message. Stop that client and
+start it again. The conversation is still listed, because the server kept
+the record. The other client shows the same message.
