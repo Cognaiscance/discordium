@@ -65,11 +65,12 @@ waits for `CREATE_RESP`, then that list shows the new row. One conversation's
 heading is its title. It shows only the messages `HISTORY_RESP` returned.
 Each message shows the sending device's alias, the local time, and the text.
 A device with no alias is shown as the first four bytes of its id in hex.
-Sending waits for `POST_ACK`, then shows the saved text. Back clears that
-conversation and returns to the list prompt. The side list stays. The empty
-main panel says to pick a conversation from the list, or to open one with
-the title box. A title error stays next to the title box. A message error
-stays next to the message box. A `NOTICE` for
+Sending waits for `POST_ACK`, then shows the saved text. Opening and sending
+try that same request again when the server does not answer, then show the
+error. Back clears that conversation and returns to the list prompt. The
+side list stays. The empty main panel says to pick a conversation from the
+list, or to open one with the title box. A title error stays next to the
+title box. A message error stays next to the message box. A `NOTICE` for
 that conversation sends `HISTORY_REQ` and adds the new messages. An `ADDED`
 updates the list and leaves the open conversation on screen. Enter in the
 title box opens a conversation, the same as Open. Enter in the message box
