@@ -65,7 +65,9 @@ waits for `CREATE_RESP`, then that list shows the new row. One conversation's
 heading is its title. It shows only the messages `HISTORY_RESP` returned.
 Each message shows the sending device's alias, the local time, and the text.
 A device with no alias is shown as the first four bytes of its id in hex.
-Sending waits for `POST_ACK`, then shows the saved text. Back clears that
+Sending waits for `POST_ACK`, then shows the saved text. Opening and sending
+try that same request again when the server does not answer, then show the
+error. Back clears that
 conversation and returns to the list prompt. The side list stays. A note
 stays on screen for the list and for the open conversation. A `NOTICE` for
 that conversation sends `HISTORY_REQ` and adds the new messages. An `ADDED`

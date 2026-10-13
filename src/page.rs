@@ -5,9 +5,14 @@
 //! The row is not taken from the typed title.
 //!
 //! A thread shows only the messages `HISTORY_RESP` returned. Sending waits
-//! for `POST_ACK` and shows the saved text. A `NOTICE` for that conversation
-//! sends `HISTORY_REQ` and adds the new messages. An `ADDED` sends `LIST_REQ`
-//! and the list shows those saved rows. The open conversation stays open.
+//! for `POST_ACK` and shows the saved text. The same create and the same post
+//! are sent again when the server does not answer. The error stays when those
+//! tries are done. A `NOTICE` for that conversation sends `HISTORY_REQ` and
+//! adds the new messages. An `ADDED` sends `LIST_REQ` and the list shows those
+//! saved rows. The open conversation stays open.
+
+/// One try plus two repeats. The id stays the same, so the server keeps one row.
+const OPEN_SEND_ATTEMPTS: usize = 3;
 
 use std::collections::HashMap;
 
@@ -69,11 +74,13 @@ impl ConversationList {
             let (rows, _) = self.fetch(&mut ask);
             return list_view(rows, Some("That title is too long."));
         };
-        let created = ask(&payload).and_then(|resp| decode_create_resp(&resp));
         let id = decode_create_req(&payload).map(|(id, _)| id);
-        if created.is_some_and(|conversation| Some(conversation.id) == id) {
-            let (rows, note) = self.fetch(&mut ask);
-            return list_view(rows, note);
+        for _ in 0..OPEN_SEND_ATTEMPTS {
+            let created = ask(&payload).and_then(|resp| decode_create_resp(&resp));
+            if created.is_some_and(|conversation| Some(conversation.id) == id) {
+                let (rows, note) = self.fetch(&mut ask);
+                return list_view(rows, note);
+            }
         }
         let (rows, _) = self.fetch(&mut ask);
         list_view(rows, Some("The server did not answer."))
@@ -109,9 +116,16 @@ impl ConversationList {
         let Some(payload) = encode_post(self.next_id(), id, text) else {
             return self.thread_with_note(id, &mut ask, "That message is too long.");
         };
-        let saved = ask(&payload).and_then(|resp| decode_post_ack(&resp));
         let sent = decode_post(&payload).map(|(message_id, _, _)| message_id);
-        let saved = saved.filter(|message| Some(message.id) == sent && message.conversation == id);
+        let mut saved = None;
+        for _ in 0..OPEN_SEND_ATTEMPTS {
+            saved = ask(&payload)
+                .and_then(|resp| decode_post_ack(&resp))
+                .filter(|message| Some(message.id) == sent && message.conversation == id);
+            if saved.is_some() {
+                break;
+            }
+        }
         let Some(saved) = saved else {
             return self.thread_with_note(id, &mut ask, "The server did not answer.");
         };
@@ -710,6 +724,127 @@ mod tests {
         assert_eq!(view.messages.len(), 1);
         assert_eq!(view.messages[0].text, "saved-line");
         assert_eq!(seen, vec![POST, HISTORY_REQ]);
+    }
+
+    #[test]
+    fn open_retries_the_same_create_then_shows_the_error() {
+        let (dir, _laptop_app, _home_app) = room();
+        let mut page = ConversationList::new();
+        page.note_directory(&dir);
+        let mut creates = Vec::new();
+        let view = page.open("general", |payload| {
+            if is_create_req(payload) {
+                creates.push(payload.to_vec());
+            }
+            None
+        });
+        assert_eq!(view.note, Some("The server did not answer."));
+        assert!(view.conversations.is_empty());
+        assert_eq!(creates.len(), OPEN_SEND_ATTEMPTS);
+        assert!(creates.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn open_keeps_the_create_that_answers_on_a_later_try() {
+        let (dir, laptop_app, home_app) = room();
+        let tmp = Temp::new("open-retry");
+        let mut store = Store::open(tmp.path()).unwrap();
+        let mut page = ConversationList::new();
+        page.note_directory(&dir);
+        let mut creates = 0;
+        let mut seen = Vec::new();
+        let view = page.open("general", |payload| {
+            if is_create_req(payload) {
+                creates += 1;
+                if creates < OPEN_SEND_ATTEMPTS {
+                    return None;
+                }
+            }
+            answer(&dir, &mut store, laptop_app, home_app, payload, &mut seen)
+        });
+        assert_eq!(creates, OPEN_SEND_ATTEMPTS);
+        assert!(view.note.is_none());
+        assert_eq!(view.conversations.len(), 1);
+        assert_eq!(view.conversations[0].title, "general");
+        assert_eq!(store.list_conversations().len(), 1);
+    }
+
+    #[test]
+    fn an_empty_title_is_an_error_without_a_create() {
+        let (dir, _laptop_app, _home_app) = room();
+        let mut page = ConversationList::new();
+        page.note_directory(&dir);
+        let mut creates = 0;
+        let view = page.open("", |payload| {
+            if is_create_req(payload) {
+                creates += 1;
+            }
+            None
+        });
+        assert_eq!(view.note, Some("A title is required."));
+        assert_eq!(creates, 0);
+    }
+
+    #[test]
+    fn send_retries_the_same_post_then_shows_the_error() {
+        let (dir, _laptop_app, _home_app) = room();
+        let mut page = ConversationList::new();
+        page.note_directory(&dir);
+        let mut posts = Vec::new();
+        let view = page.send(ident(0x71), "hello", |payload| {
+            if is_post(payload) {
+                posts.push(payload.to_vec());
+            }
+            None
+        });
+        assert_eq!(view.note, Some("The server did not answer."));
+        assert!(view.messages.is_empty());
+        assert_eq!(posts.len(), OPEN_SEND_ATTEMPTS);
+        assert!(posts.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn send_keeps_the_post_that_answers_on_a_later_try() {
+        let (dir, _laptop_app, _home_app) = room();
+        let id = ident(0x71);
+        let mut page = ConversationList::new();
+        page.note_directory(&dir);
+        let mut posts = Vec::new();
+        let view = page.send(id, "typed-line", |payload| {
+            if is_post(payload) {
+                posts.push(payload.to_vec());
+                if posts.len() < OPEN_SEND_ATTEMPTS {
+                    return None;
+                }
+                let (message_id, conversation, _) = decode_post(payload).unwrap();
+                return Some(post_ack(message_id, conversation, "saved-line"));
+            }
+            if is_history_req(payload) {
+                return Some(empty_history(id));
+            }
+            None
+        });
+        assert_eq!(posts.len(), OPEN_SEND_ATTEMPTS);
+        assert!(posts.windows(2).all(|pair| pair[0] == pair[1]));
+        assert!(view.note.is_none());
+        assert_eq!(view.messages.len(), 1);
+        assert_eq!(view.messages[0].text, "saved-line");
+    }
+
+    #[test]
+    fn an_empty_message_is_an_error_without_a_post() {
+        let (dir, _laptop_app, _home_app) = room();
+        let mut page = ConversationList::new();
+        page.note_directory(&dir);
+        let mut posts = 0;
+        let view = page.send(ident(0x71), "", |payload| {
+            if is_post(payload) {
+                posts += 1;
+            }
+            None
+        });
+        assert_eq!(view.note, Some("A message is required."));
+        assert_eq!(posts, 0);
     }
 
     #[test]
