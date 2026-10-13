@@ -416,9 +416,15 @@ fn ask_record(
         .send(token, &server.device, &server.app, request)
         .ok()?;
     // The window drains the socket on a short timeout. A reply wait must not
-    // spin on that same timeout.
+    // spin on that same timeout. Open and send try the same payload three
+    // times, so each of those waits is one second.
+    let wait = if is_create_req(request) || is_post(request) {
+        Duration::from_secs(1)
+    } else {
+        Duration::from_secs(3)
+    };
     let _ = push.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + wait;
     while Instant::now() < deadline {
         let Some((sender, payload)) = recv_push(push) else {
             continue;
