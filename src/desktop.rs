@@ -3,8 +3,9 @@
 //! The list and the thread show only what the record server returned.
 //! The open conversation's heading is its title. Each message shows the
 //! sending device's alias, the local time, and the text. Back returns to
-//! the list prompt and leaves the side list. Enter in the title box opens
-//! a conversation. Enter in the message box sends that message.
+//! the list prompt and leaves the side list. The title box opens a
+//! conversation. The message box sends into the open one. An error stays
+//! next to the box that caused it.
 
 use std::time::{Duration, Instant};
 
@@ -191,9 +192,39 @@ fn leave_conversation(view: &mut View) {
     view.messages.clear();
 }
 
+const LIST_PROMPT: &str = "Pick a conversation from the list, or open one with the title box.";
+
 fn show_note(ui: &mut egui::Ui, note: Option<&str>) {
     if let Some(note) = note {
         ui.label(note);
+    }
+}
+
+/// Title-box errors, and a list-screen failure to reach the server.
+fn note_beside_title(view: &View) -> Option<&str> {
+    let note = view.note?;
+    if view.thread.is_some() {
+        return None;
+    }
+    match note {
+        "A title is required."
+        | "That title is too long."
+        | "The server is not visible yet."
+        | "The server did not answer." => Some(note),
+        _ => None,
+    }
+}
+
+/// Message-box errors, and a failure to reach the server while a thread is open.
+fn note_beside_message(view: &View) -> Option<&str> {
+    let note = view.note?;
+    view.thread?;
+    match note {
+        "A message is required."
+        | "That message is too long."
+        | "The server is not visible yet."
+        | "The server did not answer." => Some(note),
+        _ => None,
     }
 }
 
@@ -241,12 +272,12 @@ impl eframe::App for Desktop {
                 {
                     self.action = Some(Action::Open);
                 }
+                show_note(ui, note_beside_title(&self.view));
             });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.view.thread {
             None => {
-                ui.label("Open a conversation.");
-                show_note(ui, self.view.note);
+                ui.label(LIST_PROMPT);
             }
             Some(id) => {
                 ui.heading(conversation_heading(&self.list, id));
@@ -262,7 +293,6 @@ impl eframe::App for Desktop {
                             ui.label(line);
                         }
                     });
-                show_note(ui, self.view.note);
                 ui.separator();
                 ui.label("Message");
                 if enter_submits(ui, egui::Id::new("message-draft"), &mut self.draft)
@@ -270,6 +300,7 @@ impl eframe::App for Desktop {
                 {
                     self.action = Some(Action::Send(id));
                 }
+                show_note(ui, note_beside_message(&self.view));
             }
         });
 
@@ -513,6 +544,73 @@ mod tests {
         assert_eq!(view.note, Some("A message is required."));
         assert_eq!(view.conversations, list);
         assert_eq!(list[0].title, "a<b c");
+    }
+
+    #[test]
+    fn notes_sit_beside_the_box_that_caused_them() {
+        let id = ident(0x71);
+        let title_error = View {
+            conversations: Vec::new(),
+            messages: Vec::new(),
+            note: Some("A title is required."),
+            thread: None,
+        };
+        assert_eq!(
+            note_beside_title(&title_error),
+            Some("A title is required.")
+        );
+        assert_eq!(note_beside_message(&title_error), None);
+        assert!(LIST_PROMPT.contains("title box"));
+
+        let long_title = View {
+            note: Some("That title is too long."),
+            ..title_error.clone()
+        };
+        assert_eq!(
+            note_beside_title(&long_title),
+            Some("That title is too long.")
+        );
+
+        let message_error = View {
+            conversations: Vec::new(),
+            messages: Vec::new(),
+            note: Some("A message is required."),
+            thread: Some(id),
+        };
+        assert_eq!(
+            note_beside_message(&message_error),
+            Some("A message is required.")
+        );
+        assert_eq!(note_beside_title(&message_error), None);
+
+        let long_message = View {
+            note: Some("That message is too long."),
+            ..message_error.clone()
+        };
+        assert_eq!(
+            note_beside_message(&long_message),
+            Some("That message is too long.")
+        );
+
+        let list_server = View {
+            note: Some("The server is not visible yet."),
+            thread: None,
+            ..title_error.clone()
+        };
+        assert_eq!(
+            note_beside_title(&list_server),
+            Some("The server is not visible yet.")
+        );
+        let thread_server = View {
+            note: Some("The server did not answer."),
+            thread: Some(id),
+            ..message_error
+        };
+        assert_eq!(
+            note_beside_message(&thread_server),
+            Some("The server did not answer.")
+        );
+        assert_eq!(note_beside_title(&thread_server), None);
     }
 
     fn ident(byte: u8) -> [u8; 16] {
