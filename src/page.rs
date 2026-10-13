@@ -6,8 +6,10 @@
 //!
 //! A thread shows only the messages `HISTORY_RESP` returned. Sending waits
 //! for `POST_ACK` and shows the saved text. The same create and the same post
-//! are sent again when the server does not answer. The error stays when those
-//! tries are done. A `NOTICE` for that conversation sends `HISTORY_REQ` and
+//! are sent again when the server does not answer. Each press builds that id
+//! once, from the time of the press, so a later press is not the row already
+//! stored. The error stays when those tries are done. A `NOTICE` for that
+//! conversation sends `HISTORY_REQ` and
 //! adds the new messages. An `ADDED` sends `LIST_REQ` and the list shows those
 //! saved rows. The open conversation stays open.
 
@@ -15,6 +17,8 @@
 const OPEN_SEND_ATTEMPTS: usize = 3;
 
 use std::collections::HashMap;
+use std::hash::BuildHasher;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::create_list::{
     decode_create_req, decode_create_resp, decode_list_resp, encode_create_req, encode_list_req,
@@ -40,6 +44,8 @@ pub struct View {
 
 pub struct ConversationList {
     seq: u64,
+    /// Chosen once so another process does not build the same id at the same time.
+    salt: u64,
     server: Option<[u8; 16]>,
     threads: HashMap<[u8; 16], Vec<Message>>,
 }
@@ -48,6 +54,7 @@ impl ConversationList {
     pub fn new() -> Self {
         Self {
             seq: 0,
+            salt: fresh_salt(),
             server: None,
             threads: HashMap::new(),
         }
@@ -279,12 +286,29 @@ impl ConversationList {
         }
     }
 
+    /// Id for this press. The first 8 bytes are that time, in milliseconds.
+    /// The last 8 bytes are a per-process salt plus the press count, so two
+    /// presses in the same millisecond stay different, including after a
+    /// restart and on another device. Open and send call this once and retry
+    /// that same id.
     fn next_id(&mut self) -> [u8; 16] {
         self.seq = self.seq.wrapping_add(1);
         let mut id = [0u8; 16];
-        id[8..].copy_from_slice(&self.seq.to_be_bytes());
+        id[..8].copy_from_slice(&press_ms().to_be_bytes());
+        id[8..].copy_from_slice(&self.salt.wrapping_add(self.seq).to_be_bytes());
         id
     }
+}
+
+fn press_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn fresh_salt() -> u64 {
+    std::collections::hash_map::RandomState::new().hash_one(0u64)
 }
 
 fn list_view(conversations: Vec<Conversation>, note: Option<&'static str>) -> View {
@@ -783,6 +807,41 @@ mod tests {
         });
         assert_eq!(view.note, Some("A title is required."));
         assert_eq!(creates, 0);
+    }
+
+    #[test]
+    fn a_press_puts_its_time_in_the_id_and_the_next_press_differs() {
+        let (dir, _laptop_app, _home_app) = room();
+        let before = press_ms();
+        let mut page = ConversationList::new();
+        page.note_directory(&dir);
+        let first = posted_id(&mut page, "one");
+        let second = posted_id(&mut page, "two");
+        let after = press_ms();
+        assert_ne!(first, second);
+        for id in [first, second] {
+            let pressed = u64::from_be_bytes(id[..8].try_into().unwrap());
+            assert!(pressed >= before && pressed <= after);
+        }
+        let first_tail = u64::from_be_bytes(first[8..].try_into().unwrap());
+        let second_tail = u64::from_be_bytes(second[8..].try_into().unwrap());
+        assert_eq!(second_tail.wrapping_sub(first_tail), 1);
+
+        let mut other = ConversationList::new();
+        other.note_directory(&dir);
+        let other_id = posted_id(&mut other, "one");
+        assert_ne!(other_id[8..], first[8..]);
+    }
+
+    fn posted_id(page: &mut ConversationList, text: &str) -> [u8; 16] {
+        let mut id = None;
+        let _view = page.send(ident(0x71), text, |payload| {
+            if id.is_none() && is_post(payload) {
+                id = decode_post(payload).map(|(message_id, _, _)| message_id);
+            }
+            None
+        });
+        id.unwrap()
     }
 
     #[test]
