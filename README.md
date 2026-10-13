@@ -61,13 +61,17 @@ server sends `ADDED` to each other attached client. That client sends
 `ADDED`. Opening the same conversation again does not send another.
 
 The window lists only the conversations `LIST_RESP` returned. Opening one
-waits for `CREATE_RESP`, then that list shows the new row. One conversation
-shows only the messages `HISTORY_RESP` returned. Sending waits for `POST_ACK`,
-then shows the saved text. A `NOTICE` for that conversation sends
-`HISTORY_REQ` and adds the new messages. An `ADDED` updates the list and
-leaves the open conversation on screen. Enter in the title box opens a
-conversation, the same as Open. Enter in the message box sends it, the same
-as Send. The window is not a web page.
+waits for `CREATE_RESP`, then that list shows the new row. One conversation's
+heading is its title. It shows only the messages `HISTORY_RESP` returned.
+Each message shows the sending device's alias, the local time, and the text.
+A device with no alias is shown as the first four bytes of its id in hex.
+Sending waits for `POST_ACK`, then shows the saved text. Back clears that
+conversation and returns to the list prompt. The side list stays. A note
+stays on screen for the list and for the open conversation. A `NOTICE` for
+that conversation sends `HISTORY_REQ` and adds the new messages. An `ADDED`
+updates the list and leaves the open conversation on screen. Enter in the
+title box opens a conversation, the same as Open. Enter in the message box
+sends it, the same as Send. The window is not a web page.
 
 ## Three nodes
 

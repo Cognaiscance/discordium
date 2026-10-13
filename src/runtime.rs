@@ -81,6 +81,10 @@ impl DeviceSession {
         self.hello.is_acked()
     }
 
+    pub fn directory(&self) -> &Directory {
+        &self.directory
+    }
+
     pub fn take_notice(&mut self) -> Option<View> {
         self.notice.take()
     }
