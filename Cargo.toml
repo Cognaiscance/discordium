@@ -6,6 +6,7 @@ description = "Conversations over pNet. The client and the server register as di
 
 [dependencies]
 eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+libc = "0.2"
 
 [lib]
 name = "discordium"
